@@ -11,7 +11,7 @@
 
 #define N 1024
 #define MAX_NODE (N * 8) // Needed for the octree so it dosent run into any problem
-#define THREADS 256
+#define THREADS (N/4)
 
 int main()
 {
@@ -171,14 +171,34 @@ int main()
     size_t globalSize = N;
     size_t localSize = THREADS;
     size_t globalSizeTree = MAX_NODE;
+    size_t one = 1;
 
     for (int step = 0; step < 100; step++)
     {
         // 1. Reset bounding box
         // clSetKernelArg + clEnqueueNDRangeKernel for resetBBoxKernel
+        clSetKernelArg(resetBBoxKernel, 0, sizeof(cl_mem), &buf_bbox);
+        clEnqueueNDRangeKernel(queue, resetBBoxKernel, 1, NULL, &one, &one, 0, NULL, NULL);
+        clFinish(queue);
 
         // 2. Compute bounding box
         // clSetKernelArg + clEnqueueNDRangeKernel for boundingBoxKernel
+        clSetKernelArg(boundingBoxKernel, 0, sizeof(cl_mem), &buf_bbox);
+        clSetKernelArg(boundingBoxKernel, 1, sizeof(cl_mem), &buf_x);
+        clSetKernelArg(boundingBoxKernel, 2, sizeof(cl_mem), &buf_y);
+        clSetKernelArg(boundingBoxKernel, 3, sizeof(cl_mem), &buf_z);
+        clEnqueueNDRangeKernel(queue, boundingBoxKernel, 1, NULL, &globalSize, &localSize, 0, NULL, NULL);
+        clFinish(queue);
+
+        if (step == 0)
+        {
+            float h_bbox[6];
+            clEnqueueReadBuffer(queue, buf_bbox, CL_TRUE, 0, 6*sizeof(float), h_bbox, 0, NULL, NULL);
+            printf("Bounding box:\n");
+            printf("  X: %.2f -> %.2f\n", h_bbox[0], h_bbox[1]);
+            printf("  Y: %.2f -> %.2f\n", h_bbox[2], h_bbox[3]);
+            printf("  Z: %.2f -> %.2f\n", h_bbox[4], h_bbox[5]);
+        }
 
         // 3. Init tree
         // clSetKernelArg + clEnqueueNDRangeKernel for initTreeKernel
@@ -209,7 +229,7 @@ int main()
     clEnqueueReadBuffer(queue, buf_z, CL_TRUE, 0, N * sizeof(float), h_z_out, 0, NULL, NULL);
 
     printf("\nFirst 10 final positions:\n");
-    for (int i = 0; i < 10; i++)
+    for (int i = 0; i < N; i++)
     {
         printf("  Body %d: (%.2f, %.2f, %.2f)\n", i, h_x_out[i], h_y_out[i], h_z_out[i]);
     }
