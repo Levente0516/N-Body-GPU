@@ -2,16 +2,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "variables.h"
 
 #ifdef __APPLE__
 #include <OpenCL/opencl.h>
 #else
 #include <CL/cl.h>
 #endif
-
-#define N 1024
-#define MAX_NODE (N * 8) // Needed for the octree so it dosent run into any problem
-#define THREADS (N/4)
 
 int main()
 {
@@ -33,36 +30,42 @@ int main()
 
 #pragma endregion
 
-#pragma region KERNEL
+#pragma region KERNEL__AND_HEADER_FOR_KERNEL
 
-    FILE *f = fopen("kernels.cl", "rb"); // open as BINARY — important on Windows
-    if (!f)
-    {
-        printf("Cannot open kernels.cl\n");
-        return 1;
-    }
-    fseek(f, 0, SEEK_END);
-    size_t srcLen = ftell(f);
-    rewind(f);
-    char *src = (char *)malloc(srcLen + 1);
-    memset(src, 0, srcLen + 1); // zero out entire buffer first
-    fread(src, 1, srcLen, f);
-    src[srcLen] = '\0';
-    fclose(f);
+    FILE *fConfig = fopen("variables.h", "rb");
+    fseek(fConfig, 0, SEEK_END);
+    size_t configLen = ftell(fConfig);
+    rewind(fConfig);
+    char *configSrc = (char *)malloc(configLen + 1);
+    memset(configSrc, 0, configLen + 1);
+    fread(configSrc, 1, configLen, fConfig);
+    configSrc[configLen] = '\0';
+    fclose(fConfig);
 
-    cl_program program = clCreateProgramWithSource(context, 1,
-                                                   (const char **)&src, &srcLen, NULL);
-    free(src);
+    FILE *fKernel = fopen("kernels.cl", "rb");
+    fseek(fKernel, 0, SEEK_END);
+    size_t kernelLen = ftell(fKernel);
+    rewind(fKernel);
+    char *kernelSrc = (char *)malloc(kernelLen + 1);
+    memset(kernelSrc, 0, kernelLen + 1);
+    fread(kernelSrc, 1, kernelLen, fKernel);
+    kernelSrc[kernelLen] = '\0';
+    fclose(fKernel);
+
+    const char *sources[2] = {configSrc, kernelSrc};
+    size_t lengths[2] = {configLen, kernelLen};
+
+    cl_program program = clCreateProgramWithSource(context, 2, sources, lengths, NULL);
+    free(kernelSrc);
+    free(configSrc);
 
     cl_int err = clBuildProgram(program, 1, &device, NULL, NULL, NULL);
     if (err != CL_SUCCESS)
     {
         size_t logLen;
-        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG,
-                              0, NULL, &logLen);
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, NULL, &logLen);
         char *log = (char *)malloc(logLen);
-        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG,
-                              logLen, log, NULL);
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, logLen, log, NULL);
         printf("Build error:\n%s\n", log);
         free(log);
         return 1;
@@ -193,7 +196,7 @@ int main()
         if (step == 0)
         {
             float h_bbox[6];
-            clEnqueueReadBuffer(queue, buf_bbox, CL_TRUE, 0, 6*sizeof(float), h_bbox, 0, NULL, NULL);
+            clEnqueueReadBuffer(queue, buf_bbox, CL_TRUE, 0, 6 * sizeof(float), h_bbox, 0, NULL, NULL);
             printf("Bounding box:\n");
             printf("  X: %.2f -> %.2f\n", h_bbox[0], h_bbox[1]);
             printf("  Y: %.2f -> %.2f\n", h_bbox[2], h_bbox[3]);

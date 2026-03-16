@@ -1,8 +1,3 @@
-#define N       1024
-#define THREADS (N/4)
-
-
-
 void atomicMinFloat(__global float* addr, float val)
 {
     __global int* addr_i = (__global int*)addr;
