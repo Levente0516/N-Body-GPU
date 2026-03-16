@@ -137,9 +137,9 @@ int main()
 
     for (int i = 0; i < N; i++)
     {
-        h_x[i] = (float)(rand() % 10000);
-        h_y[i] = (float)(rand() % 10000);
-        h_z[i] = (float)(rand() % 10000);
+        h_x[i] = (float)((rand() % 10000) - 5000);
+        h_y[i] = (float)((rand() % 10000) - 5000);
+        h_z[i] = (float)((rand() % 10000) - 5000);
 
         h_vx[i] = 0.0f;
         h_vy[i] = 0.0f;
@@ -231,7 +231,7 @@ int main()
     clEnqueueReadBuffer(queue, buf_y, CL_TRUE, 0, N * sizeof(float), h_y_out, 0, NULL, NULL);
     clEnqueueReadBuffer(queue, buf_z, CL_TRUE, 0, N * sizeof(float), h_z_out, 0, NULL, NULL);
 
-    printf("\nFirst 10 final positions:\n");
+    printf("\nFirst %d final positions:\n", N);
     for (int i = 0; i < N; i++)
     {
         printf("  Body %d: (%.2f, %.2f, %.2f)\n", i, h_x_out[i], h_y_out[i], h_z_out[i]);

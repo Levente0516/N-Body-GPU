@@ -3,8 +3,9 @@ void atomicMinFloat(__global float* addr, float val)
     __global int* addr_i = (__global int*)addr;
     int old, newVal;
     do {
-        old    = *addr_i;
-        newVal = as_int(fmin(as_float(old), val));
+        old = *addr_i;
+        float oldFloat = as_float(old);
+        newVal = as_int(fmin(oldFloat, val));
     } while (atomic_cmpxchg(addr_i, old, newVal) != old);
 }
 
@@ -13,8 +14,9 @@ void atomicMaxFloat(__global float* addr, float val)
     __global int* addr_i = (__global int*)addr;
     int old, newVal;
     do {
-        old    = *addr_i;
-        newVal = as_int(fmax(as_float(old), val));
+        old = *addr_i;
+        float oldFloat = as_float(old);
+        newVal = as_int(fmax(oldFloat, val));
     } while (atomic_cmpxchg(addr_i, old, newVal) != old);
 }
 
