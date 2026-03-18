@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -I"OpenCL-SDK\external\OpenCL-Headers" -DCL_TARGET_OPENCL_VERSION=300
+CXXFLAGS = -I"OpenCL-SDK\external\OpenCL-Headers" -DCL_TARGET_OPENCL_VERSION=300 -DCL_HPP_TARGET_OPENCL_VERSION=300
 LDFLAGS = -L. -lOpenCL
 
 all: n-body.exe

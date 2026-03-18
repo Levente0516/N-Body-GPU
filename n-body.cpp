@@ -1,14 +1,36 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include "variables.h"
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <string>
+#include <cstdlib>
+#include <ctime>
+#include "variables.hpp"
+
+#define CL_HPP_ENABLE_EXCEPTIONS  
 
 #ifdef __APPLE__
-#include <OpenCL/opencl.h>
+#include <OpenCL/opencl.hpp>
 #else
-#include <CL/cl.h>
+#include <CL/opencl.hpp>
 #endif
+
+#pragma region FILE_READ_HELPER
+
+std::string loadFile(const std::string& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open())
+    {
+        std::cerr << "Cannot open file: " << path << std::endl;
+        exit(1);
+    }
+    std::ostringstream ss;
+    ss << file.rdbuf();
+    return ss.str();
+}
+
+#pragma endregion
 
 int main()
 {
@@ -16,68 +38,58 @@ int main()
 
 #pragma region PLATFORM_AND_DEVICE
 
-    cl_platform_id platform;
-    cl_device_id device;
-    clGetPlatformIDs(1, &platform, NULL);
-    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+    std::vector<cl::Platform> platforms;
+    cl::Platform::get(&platforms);
+    cl::Platform platform = platforms[0];
+
+    // Get GPU device
+    std::vector<cl::Device> devices;
+    platform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
+    cl::Device device = devices[0];
+
+    std::cout << "Using device: " << device.getInfo<CL_DEVICE_NAME>() << std::endl;
 
 #pragma endregion
 
 #pragma region CONTEXT
 
-    cl_context context = clCreateContext(NULL, 1, &device, NULL, NULL, NULL);
-    cl_command_queue queue = clCreateCommandQueueWithProperties(context, device, 0, NULL);
+    cl::Context context(device);
+    cl::CommandQueue queue(context, device);
 
 #pragma endregion
 
 #pragma region KERNEL__AND_HEADER_FOR_KERNEL
 
-    FILE *fConfig = fopen("variables.h", "rb");
-    fseek(fConfig, 0, SEEK_END);
-    size_t configLen = ftell(fConfig);
-    rewind(fConfig);
-    char *configSrc = (char *)malloc(configLen + 1);
-    memset(configSrc, 0, configLen + 1);
-    fread(configSrc, 1, configLen, fConfig);
-    configSrc[configLen] = '\0';
-    fclose(fConfig);
+    std::string configSrc = loadFile("variables.hpp");
+    std::string kernelSrc = loadFile("kernels.cl");
 
-    FILE *fKernel = fopen("kernels.cl", "rb");
-    fseek(fKernel, 0, SEEK_END);
-    size_t kernelLen = ftell(fKernel);
-    rewind(fKernel);
-    char *kernelSrc = (char *)malloc(kernelLen + 1);
-    memset(kernelSrc, 0, kernelLen + 1);
-    fread(kernelSrc, 1, kernelLen, fKernel);
-    kernelSrc[kernelLen] = '\0';
-    fclose(fKernel);
+    cl::Program::Sources sources;
+    sources.push_back(configSrc);
+    sources.push_back(kernelSrc);
 
-    const char *sources[2] = {configSrc, kernelSrc};
-    size_t lengths[2] = {configLen, kernelLen};
+    cl::Program program(context, sources);
 
-    cl_program program = clCreateProgramWithSource(context, 2, sources, lengths, NULL);
-    free(kernelSrc);
-    free(configSrc);
-
-    cl_int err = clBuildProgram(program, 1, &device, NULL, NULL, NULL);
-    if (err != CL_SUCCESS)
+    try
     {
-        size_t logLen;
-        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, NULL, &logLen);
-        char *log = (char *)malloc(logLen);
-        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, logLen, log, NULL);
-        printf("Build error:\n%s\n", log);
-        free(log);
+        program.build({ device });
+    }
+    catch (const cl::Error&)
+    {
+        std::cerr << "Build error:\n"
+                    << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device)
+                    << std::endl;
         return 1;
     }
 
-    cl_kernel resetBBoxKernel = clCreateKernel(program, "resetBBoxKernel", NULL);
-    cl_kernel boundingBoxKernel = clCreateKernel(program, "boundingBoxKernel", NULL);
-    cl_kernel initTreeKernel = clCreateKernel(program, "initTreeKernel", NULL);
-    cl_kernel insertKernel = clCreateKernel(program, "insertBodiesKernel", NULL);
-    cl_kernel comKernel = clCreateKernel(program, "computeCOMKernel", NULL);
-    cl_kernel forceKernel = clCreateKernel(program, "forceKernel", NULL);
-    cl_kernel integKernel = clCreateKernel(program, "integrationKernel", NULL);
+    cl::Kernel resetBBoxKernel(program, "resetBBoxKernel");
+    cl::Kernel boundingBoxKernel(program, "boundingBoxKernel");
+    /*
+    cl::Kernel initTreeKernel(program, "initTreeKernel");
+    cl::Kernel insertKernel(program, "insertBodiesKernel");
+    cl::Kernel comKernel(program, "computeCOMKernel");
+    cl::Kernel forceKernel(program, "forceKernel");
+    cl::Kernel integKernel(program, "integrationKernel");
+    */
 
 #pragma endregion
 
@@ -85,57 +97,46 @@ int main()
 
 #pragma region BODY_BUFFERS
 
-    cl_mem buf_x = clCreateBuffer(context, CL_MEM_READ_WRITE, N * sizeof(float), NULL, NULL);
-    cl_mem buf_y = clCreateBuffer(context, CL_MEM_READ_WRITE, N * sizeof(float), NULL, NULL);
-    cl_mem buf_z = clCreateBuffer(context, CL_MEM_READ_WRITE, N * sizeof(float), NULL, NULL);
-
-    cl_mem buf_vx = clCreateBuffer(context, CL_MEM_READ_WRITE, N * sizeof(float), NULL, NULL);
-    cl_mem buf_vy = clCreateBuffer(context, CL_MEM_READ_WRITE, N * sizeof(float), NULL, NULL);
-    cl_mem buf_vz = clCreateBuffer(context, CL_MEM_READ_WRITE, N * sizeof(float), NULL, NULL);
-
-    cl_mem buf_fx = clCreateBuffer(context, CL_MEM_READ_WRITE, N * sizeof(float), NULL, NULL);
-    cl_mem buf_fy = clCreateBuffer(context, CL_MEM_READ_WRITE, N * sizeof(float), NULL, NULL);
-    cl_mem buf_fz = clCreateBuffer(context, CL_MEM_READ_WRITE, N * sizeof(float), NULL, NULL);
-
-    cl_mem buf_mass = clCreateBuffer(context, CL_MEM_READ_WRITE, N * sizeof(float), NULL, NULL);
+    cl::Buffer buf_x(context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
+    cl::Buffer buf_y(context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
+    cl::Buffer buf_z(context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
+    cl::Buffer buf_vx(context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
+    cl::Buffer buf_vy(context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
+    cl::Buffer buf_vz(context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
+    cl::Buffer buf_fx(context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
+    cl::Buffer buf_fy(context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
+    cl::Buffer buf_fz(context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
+    cl::Buffer buf_mass(context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
 
 #pragma endregion
 
 #pragma region OCTREE
 
-    cl_mem buf_child = clCreateBuffer(context, CL_MEM_READ_WRITE, MAX_NODE * 8 * sizeof(int), NULL, NULL);
-
-    cl_mem buf_nodeX = clCreateBuffer(context, CL_MEM_READ_WRITE, MAX_NODE * sizeof(float), NULL, NULL);
-    cl_mem buf_nodeY = clCreateBuffer(context, CL_MEM_READ_WRITE, MAX_NODE * sizeof(float), NULL, NULL);
-    cl_mem buf_nodeZ = clCreateBuffer(context, CL_MEM_READ_WRITE, MAX_NODE * sizeof(float), NULL, NULL);
-
-    cl_mem buf_nodeMass = clCreateBuffer(context, CL_MEM_READ_WRITE, MAX_NODE * sizeof(float), NULL, NULL);
-
-    cl_mem buf_nodeCount = clCreateBuffer(context, CL_MEM_READ_WRITE, MAX_NODE * sizeof(int), NULL, NULL);
-
-    cl_mem buf_nodeSize = clCreateBuffer(context, CL_MEM_READ_WRITE, MAX_NODE * sizeof(float), NULL, NULL);
-
-    cl_mem buf_nextNode = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(int), NULL, NULL);
+    cl::Buffer buf_child    (context, CL_MEM_READ_WRITE, MAX_NODE*8*sizeof(int)  );
+    cl::Buffer buf_nodeX    (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float)  );
+    cl::Buffer buf_nodeY    (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float)  );
+    cl::Buffer buf_nodeZ    (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float)  );
+    cl::Buffer buf_nodeMass (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float)  );
+    cl::Buffer buf_nodeCount(context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(int)    );
+    cl::Buffer buf_nodeSize (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float)  );
+    cl::Buffer buf_nextNode (context, CL_MEM_READ_WRITE, sizeof(int)             );
 
 #pragma endregion
 
-    // Bounding box [minX, maxX, minY, maxY, minZ, maxZ]
-    cl_mem buf_bbox = clCreateBuffer(context, CL_MEM_READ_WRITE, 6 * sizeof(float), NULL, NULL);
-
-    // Insertion retry flag
-    cl_mem buf_flag = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(int), NULL, NULL);
+    cl::Buffer buf_bbox(context, CL_MEM_READ_WRITE, 6*sizeof(float));
+    cl::Buffer buf_flag(context, CL_MEM_READ_WRITE, sizeof(int)    );
 
 #pragma endregion
 
 #pragma region INIT
 
     // Initialise bodies on CPU
-    float h_x[N], h_y[N], h_z[N];
-    float h_vx[N], h_vy[N], h_vz[N];
-    float h_fx[N], h_fy[N], h_fz[N];
-    float h_mass[N];
+    std::vector<float> h_x(NUM_BODIES), h_y(NUM_BODIES), h_z(NUM_BODIES);
+    std::vector<float> h_vx(NUM_BODIES), h_vy(NUM_BODIES), h_vz(NUM_BODIES);
+    std::vector<float> h_fx(NUM_BODIES), h_fy(NUM_BODIES), h_fz(NUM_BODIES);
+    std::vector<float> h_mass(NUM_BODIES);
 
-    for (int i = 0; i < N; i++)
+    for (int i = 0; i < NUM_BODIES; i++)
     {
         h_x[i] = (float)((rand() % 10000) - 5000);
         h_y[i] = (float)((rand() % 10000) - 5000);
@@ -153,126 +154,83 @@ int main()
     }
 
     // Upload to GPU
-    clEnqueueWriteBuffer(queue, buf_x, CL_TRUE, 0, N * sizeof(float), h_x, 0, NULL, NULL);
-    clEnqueueWriteBuffer(queue, buf_y, CL_TRUE, 0, N * sizeof(float), h_y, 0, NULL, NULL);
-    clEnqueueWriteBuffer(queue, buf_z, CL_TRUE, 0, N * sizeof(float), h_z, 0, NULL, NULL);
-
-    clEnqueueWriteBuffer(queue, buf_vx, CL_TRUE, 0, N * sizeof(float), h_vx, 0, NULL, NULL);
-    clEnqueueWriteBuffer(queue, buf_vy, CL_TRUE, 0, N * sizeof(float), h_vy, 0, NULL, NULL);
-    clEnqueueWriteBuffer(queue, buf_vz, CL_TRUE, 0, N * sizeof(float), h_vz, 0, NULL, NULL);
-
-    clEnqueueWriteBuffer(queue, buf_fx, CL_TRUE, 0, N * sizeof(float), h_fx, 0, NULL, NULL);
-    clEnqueueWriteBuffer(queue, buf_fy, CL_TRUE, 0, N * sizeof(float), h_fy, 0, NULL, NULL);
-    clEnqueueWriteBuffer(queue, buf_fz, CL_TRUE, 0, N * sizeof(float), h_fz, 0, NULL, NULL);
-
-    clEnqueueWriteBuffer(queue, buf_mass, CL_TRUE, 0, N * sizeof(float), h_mass, 0, NULL, NULL);
+    queue.enqueueWriteBuffer(buf_x,    CL_TRUE, 0, NUM_BODIES*sizeof(float), h_x.data()   );
+    queue.enqueueWriteBuffer(buf_y,    CL_TRUE, 0, NUM_BODIES*sizeof(float), h_y.data()   );
+    queue.enqueueWriteBuffer(buf_z,    CL_TRUE, 0, NUM_BODIES*sizeof(float), h_z.data()   );
+    queue.enqueueWriteBuffer(buf_vx,   CL_TRUE, 0, NUM_BODIES*sizeof(float), h_vx.data()  );
+    queue.enqueueWriteBuffer(buf_vy,   CL_TRUE, 0, NUM_BODIES*sizeof(float), h_vy.data()  );
+    queue.enqueueWriteBuffer(buf_vz,   CL_TRUE, 0, NUM_BODIES*sizeof(float), h_vz.data()  );
+    queue.enqueueWriteBuffer(buf_fx,   CL_TRUE, 0, NUM_BODIES*sizeof(float), h_fx.data()  );
+    queue.enqueueWriteBuffer(buf_fy,   CL_TRUE, 0, NUM_BODIES*sizeof(float), h_fy.data()  );
+    queue.enqueueWriteBuffer(buf_fz,   CL_TRUE, 0, NUM_BODIES*sizeof(float), h_fz.data()  );
+    queue.enqueueWriteBuffer(buf_mass, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_mass.data());
 
 #pragma endregion
 
 #pragma region LOOP
 
-    size_t globalSize = N;
-    size_t localSize = THREADS;
-    size_t globalSizeTree = MAX_NODE;
-    size_t one = 1;
+    cl::NDRange global(NUM_BODIES);
+    cl::NDRange local(THREADS);
+    cl::NDRange globalTree(MAX_NODE);
+    cl::NDRange one(1);
 
-    for (int step = 0; step < 100; step++)
+     for (int step = 0; step < 10; step++)
     {
         // 1. Reset bounding box
-        // clSetKernelArg + clEnqueueNDRangeKernel for resetBBoxKernel
-        clSetKernelArg(resetBBoxKernel, 0, sizeof(cl_mem), &buf_bbox);
-        clEnqueueNDRangeKernel(queue, resetBBoxKernel, 1, NULL, &one, &one, 0, NULL, NULL);
-        clFinish(queue);
+        resetBBoxKernel.setArg(0, buf_bbox);
+        queue.enqueueNDRangeKernel(resetBBoxKernel, cl::NullRange, one, one);
+        queue.finish();
 
         // 2. Compute bounding box
-        // clSetKernelArg + clEnqueueNDRangeKernel for boundingBoxKernel
-        clSetKernelArg(boundingBoxKernel, 0, sizeof(cl_mem), &buf_bbox);
-        clSetKernelArg(boundingBoxKernel, 1, sizeof(cl_mem), &buf_x);
-        clSetKernelArg(boundingBoxKernel, 2, sizeof(cl_mem), &buf_y);
-        clSetKernelArg(boundingBoxKernel, 3, sizeof(cl_mem), &buf_z);
-        clEnqueueNDRangeKernel(queue, boundingBoxKernel, 1, NULL, &globalSize, &localSize, 0, NULL, NULL);
-        clFinish(queue);
-
-        if (step == 0)
-        {
-            float h_bbox[6];
-            clEnqueueReadBuffer(queue, buf_bbox, CL_TRUE, 0, 6 * sizeof(float), h_bbox, 0, NULL, NULL);
-            printf("Bounding box:\n");
-            printf("  X: %.2f -> %.2f\n", h_bbox[0], h_bbox[1]);
-            printf("  Y: %.2f -> %.2f\n", h_bbox[2], h_bbox[3]);
-            printf("  Z: %.2f -> %.2f\n", h_bbox[4], h_bbox[5]);
-        }
+        boundingBoxKernel.setArg(0, buf_bbox);
+        boundingBoxKernel.setArg(1, buf_x);
+        boundingBoxKernel.setArg(2, buf_y);
+        boundingBoxKernel.setArg(3, buf_z);
+        queue.enqueueNDRangeKernel(boundingBoxKernel, cl::NullRange, global, local);
+        queue.finish();
 
         // 3. Init tree
-        // clSetKernelArg + clEnqueueNDRangeKernel for initTreeKernel
+        // TODO
 
-        // 4. Insert bodies (retry loop)
-        // int h_flag = 1;
-        // while (h_flag) { ... insertKernel ... }
+        // 4. Insert bodies
+        // TODO
 
-        // 5. Compute COM (multiple passes)
-        // for (int p = 0; p < 24; p++) { ... comKernel ... }
+        // 5. Compute COM
+        // TODO
 
         // 6. Forces
-        // clSetKernelArg + clEnqueueNDRangeKernel for forceKernel
+        // TODO
 
         // 7. Integration
-        // clSetKernelArg + clEnqueueNDRangeKernel for integKernel
+        // TODO
 
-        clFinish(queue);
+        queue.finish();
     }
+
+    std::vector<float> h_bbox(6);
+    queue.enqueueReadBuffer(buf_bbox, CL_TRUE, 0, 6*sizeof(float), h_bbox.data());
+    std::cout << "Bounding box:" << std::endl;
+    std::cout << "  X: " << h_bbox[0] << " -> " << h_bbox[1] << std::endl;
+    std::cout << "  Y: " << h_bbox[2] << " -> " << h_bbox[3] << std::endl;
+    std::cout << "  Z: " << h_bbox[4] << " -> " << h_bbox[5] << std::endl;
 
 #pragma endregion
 
 #pragma region READBACK
 
-    float h_x_out[N], h_y_out[N], h_z_out[N];
-    clEnqueueReadBuffer(queue, buf_x, CL_TRUE, 0, N * sizeof(float), h_x_out, 0, NULL, NULL);
-    clEnqueueReadBuffer(queue, buf_y, CL_TRUE, 0, N * sizeof(float), h_y_out, 0, NULL, NULL);
-    clEnqueueReadBuffer(queue, buf_z, CL_TRUE, 0, N * sizeof(float), h_z_out, 0, NULL, NULL);
+    std::vector<float> h_x_out(NUM_BODIES), h_y_out(NUM_BODIES), h_z_out(NUM_BODIES);
+    queue.enqueueReadBuffer(buf_x, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_x_out.data());
+    queue.enqueueReadBuffer(buf_y, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_y_out.data());
+    queue.enqueueReadBuffer(buf_z, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_z_out.data());
 
-    printf("\nFirst %d final positions:\n", N);
-    for (int i = 0; i < N; i++)
+    std::cout << "\nFirst 10 final positions:" << std::endl;
+    for (int i = 0; i < NUM_BODIES; i++)
     {
-        printf("  Body %d: (%.2f, %.2f, %.2f)\n", i, h_x_out[i], h_y_out[i], h_z_out[i]);
+        std::cout << "  Body " << i << ": ("
+                    << h_x_out[i] << ", "
+                    << h_y_out[i] << ", "
+                    << h_z_out[i] << ")" << std::endl;
     }
-
-#pragma endregion
-
-#pragma region CLEANUP
-
-    clReleaseMemObject(buf_x);
-    clReleaseMemObject(buf_y);
-    clReleaseMemObject(buf_z);
-    clReleaseMemObject(buf_vx);
-    clReleaseMemObject(buf_vy);
-    clReleaseMemObject(buf_vz);
-    clReleaseMemObject(buf_fx);
-    clReleaseMemObject(buf_fy);
-    clReleaseMemObject(buf_fz);
-    clReleaseMemObject(buf_mass);
-    clReleaseMemObject(buf_child);
-    clReleaseMemObject(buf_nodeX);
-    clReleaseMemObject(buf_nodeY);
-    clReleaseMemObject(buf_nodeZ);
-    clReleaseMemObject(buf_nodeMass);
-    clReleaseMemObject(buf_nodeCount);
-    clReleaseMemObject(buf_nodeSize);
-    clReleaseMemObject(buf_nextNode);
-    clReleaseMemObject(buf_bbox);
-    clReleaseMemObject(buf_flag);
-
-    clReleaseKernel(resetBBoxKernel);
-    clReleaseKernel(boundingBoxKernel);
-    clReleaseKernel(initTreeKernel);
-    clReleaseKernel(insertKernel);
-    clReleaseKernel(comKernel);
-    clReleaseKernel(forceKernel);
-    clReleaseKernel(integKernel);
-
-    clReleaseProgram(program);
-    clReleaseCommandQueue(queue);
-    clReleaseContext(context);
 
 #pragma endregion
 

@@ -42,7 +42,7 @@ __kernel void boundingBoxKernel(__global float* bbox, __global float* buf_x, __g
     int tid = get_local_id(0);  
     int gid = get_global_id(0);  
 
-    if (gid < N)
+    if (gid < NUM_BODIES)
     {
         sMinX[tid] = buf_x[gid];
         sMaxX[tid] = buf_x[gid];
