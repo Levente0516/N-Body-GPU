@@ -5,6 +5,7 @@
 #include <string>
 #include <cstdlib>
 #include <ctime>
+#include <cmath>
 #include "variables.hpp"
 
 #define CL_HPP_ENABLE_EXCEPTIONS  
@@ -83,10 +84,10 @@ int main()
 
     cl::Kernel resetBBoxKernel(program, "resetBBoxKernel");
     cl::Kernel boundingBoxKernel(program, "boundingBoxKernel");
-    /*
     cl::Kernel initTreeKernel(program, "initTreeKernel");
     cl::Kernel insertKernel(program, "insertBodiesKernel");
     cl::Kernel comKernel(program, "computeCOMKernel");
+    /*
     cl::Kernel forceKernel(program, "forceKernel");
     cl::Kernel integKernel(program, "integrationKernel");
     */
@@ -190,13 +191,48 @@ int main()
         queue.finish();
 
         // 3. Init tree
-        // TODO
+        initTreeKernel.setArg(0, buf_child);
+        initTreeKernel.setArg(1, buf_nodeX);
+        initTreeKernel.setArg(2, buf_nodeY);
+        initTreeKernel.setArg(3, buf_nodeZ);
+        initTreeKernel.setArg(4, buf_nodeMass);
+        initTreeKernel.setArg(5, buf_nodeCount);
+        initTreeKernel.setArg(6, buf_nodeSize);
+        initTreeKernel.setArg(7, buf_nextNode);
+        initTreeKernel.setArg(8, buf_bbox);
+        queue.enqueueNDRangeKernel(initTreeKernel, cl::NullRange, globalTree, local);
+        queue.finish();
 
         // 4. Insert bodies
-        // TODO
+        insertKernel.setArg(0, buf_child);
+        insertKernel.setArg(1, buf_nodeX);
+        insertKernel.setArg(2, buf_nodeY);
+        insertKernel.setArg(3, buf_nodeZ);
+        insertKernel.setArg(4, buf_nodeMass);
+        insertKernel.setArg(5, buf_nodeCount);
+        insertKernel.setArg(6, buf_nodeSize);
+        insertKernel.setArg(7, buf_nextNode);
+        insertKernel.setArg(8, buf_x);
+        insertKernel.setArg(9, buf_y);
+        insertKernel.setArg(10, buf_z);
+        insertKernel.setArg(11, buf_mass);
+        queue.enqueueNDRangeKernel(insertKernel, cl::NullRange, global, local);
+        queue.finish();
 
         // 5. Compute COM
-        // TODO
+        comKernel.setArg(0, buf_child);
+        comKernel.setArg(1, buf_nodeX);
+        comKernel.setArg(2, buf_nodeY);
+        comKernel.setArg(3, buf_nodeZ);
+        comKernel.setArg(4, buf_nodeMass);
+        comKernel.setArg(5, buf_nodeCount);
+        comKernel.setArg(6, buf_x);
+        comKernel.setArg(7, buf_y);
+        comKernel.setArg(8, buf_z);
+        comKernel.setArg(9, buf_mass);
+        comKernel.setArg(10, buf_nextNode);
+        queue.enqueueNDRangeKernel(comKernel, cl::NullRange, cl::NDRange(1), cl::NDRange(1));
+        queue.finish();
 
         // 6. Forces
         // TODO
@@ -231,6 +267,140 @@ int main()
                     << h_y_out[i] << ", "
                     << h_z_out[i] << ")" << std::endl;
     }
+
+    std::vector<int>   h_child(MAX_NODE * 8);
+    std::vector<float> h_nodeX(MAX_NODE);
+    std::vector<float> h_nodeY(MAX_NODE);
+    std::vector<float> h_nodeZ(MAX_NODE);
+    std::vector<float> h_nodeSize(MAX_NODE);
+    std::vector<int>   h_nextNode(1);
+
+    queue.enqueueReadBuffer(buf_child, CL_TRUE, 0, sizeof(int)*MAX_NODE*8, h_child.data());
+    queue.enqueueReadBuffer(buf_nodeX, CL_TRUE, 0, sizeof(float)*MAX_NODE, h_nodeX.data());
+    queue.enqueueReadBuffer(buf_nodeY, CL_TRUE, 0, sizeof(float)*MAX_NODE, h_nodeY.data());
+    queue.enqueueReadBuffer(buf_nodeZ, CL_TRUE, 0, sizeof(float)*MAX_NODE, h_nodeZ.data());
+    queue.enqueueReadBuffer(buf_nodeSize, CL_TRUE, 0, sizeof(float)*MAX_NODE, h_nodeSize.data());
+    queue.enqueueReadBuffer(buf_nextNode, CL_TRUE, 0, sizeof(int), h_nextNode.data());
+
+    std::cout << "\nRoot node:\n";
+    std::cout << "Center: (" 
+            << h_nodeX[0] << ", "
+            << h_nodeY[0] << ", "
+            << h_nodeZ[0] << ")\n";
+    std::cout << "Size: " << h_nodeSize[0] << "\n";
+
+    std::cout << "Children:\n";
+    for (int i = 0; i < 8; i++)
+    {
+        std::cout << "  child[" << i << "] = " << h_child[i] << "\n";
+    }
+
+    std::cout << "Total nodes used: " << h_nextNode[0] << std::endl;
+
+    int bodyRefs = 0;
+
+    for (int n = 0; n < h_nextNode[0]; n++)
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            int c = h_child[n * 8 + i];
+            if (c >= 0 && c < NUM_BODIES)
+                bodyRefs++;
+        }
+    }
+
+    std::cout << "Body references in tree: " << bodyRefs << std::endl;
+
+    for (int n = 0; n < h_nextNode[0]; n++)
+    {
+        if (h_nodeSize[n] <= 0.0f)
+        {
+            std::cout << "ERROR: node " << n << " has invalid size!\n";
+        }
+    }
+
+    for (int n = 0; n < h_nextNode[0]; n++)
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            int c = h_child[n * 8 + i];
+
+            if (c >= NUM_BODIES)
+            {
+                int childNode = c - NUM_BODIES;
+
+                if (childNode >= h_nextNode[0])
+                {
+                    std::cout << "ERROR: invalid child node index!\n";
+                }
+            }
+        }
+    }
+
+    // COM verification readback
+    std::vector<float> h_nodeMass(MAX_NODE);
+    std::vector<int>   h_nodeCount(MAX_NODE);
+
+    queue.enqueueReadBuffer(buf_nodeMass,  CL_TRUE, 0, sizeof(float)*MAX_NODE, h_nodeMass.data());
+    queue.enqueueReadBuffer(buf_nodeCount, CL_TRUE, 0, sizeof(int)*MAX_NODE,   h_nodeCount.data());
+
+    std::cout << "\n--- COM Verification ---\n";
+
+    // Root node should contain everything
+    std::cout << "Root node:\n";
+    std::cout << "  COM position : ("
+            << h_nodeX[0] << ", "
+            << h_nodeY[0] << ", "
+            << h_nodeZ[0] << ")\n";
+    std::cout << "  Total mass   : " << h_nodeMass[0]  << "\n";
+    std::cout << "  Body count   : " << h_nodeCount[0] << " (expected " << NUM_BODIES << ")\n";
+
+    if (h_nodeCount[0] != NUM_BODIES)
+        std::cout << "  WARNING: body count mismatch!\n";
+
+    // Compute expected total mass from CPU side for cross-check
+    float expectedMass = 0.0f;
+    for (int i = 0; i < NUM_BODIES; i++)
+        expectedMass += h_mass[i];
+
+    std::cout << "  Expected mass: " << expectedMass << "\n";
+
+    float massError = fabs(h_nodeMass[0] - expectedMass) / expectedMass;
+    std::cout << "  Mass error   : " << massError * 100.0f << "%\n";
+    if (massError > 0.001f)
+        std::cout << "  WARNING: mass error too large!\n";
+
+    // Print a few internal nodes to sanity check
+    std::cout << "\nSample internal nodes:\n";
+    int printed = 0;
+    for (int n = 0; n < h_nextNode[0] && printed < 5; n++)
+    {
+        if (h_nodeCount[n] > 1)
+        {
+            std::cout << "  Node " << n << ":"
+                    << "  COM=(" << h_nodeX[n] << ", " << h_nodeY[n] << ", " << h_nodeZ[n] << ")"
+                    << "  mass="  << h_nodeMass[n]
+                    << "  count=" << h_nodeCount[n]
+                    << "  size="  << h_nodeSize[n] << "\n";
+            printed++;
+        }
+    }
+
+    // Check for any nodes with mass but zero count or vice versa
+    int badNodes = 0;
+    for (int n = 0; n < h_nextNode[0]; n++)
+    {
+        bool hasMass  = h_nodeMass[n]  > 0.0f;
+        bool hasCount = h_nodeCount[n] > 0;
+        if (hasMass != hasCount)
+        {
+            std::cout << "  ERROR: node " << n << " has inconsistent mass/count!\n";
+            badNodes++;
+        }
+    }
+    if (badNodes == 0)
+        std::cout << "\nAll " << h_nextNode[0] << " nodes passed mass/count consistency check.\n";
+
 
 #pragma endregion
 
