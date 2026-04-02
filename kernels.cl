@@ -282,3 +282,123 @@ __kernel void computeCOMKernel(
         }
     }
 }
+
+__kernel void forceKernel(
+    __global int*   child,
+    __global float* nodeX,    __global float* nodeY,    __global float* nodeZ,
+    __global float* nodeMass, __global float* nodeSize,
+    __global int*   nextNode,
+    __global float* x,  __global float* y,  __global float* z,
+    __global float* fx, __global float* fy, __global float* fz,
+    __global float* mass)
+{
+    int bodyIdx = get_global_id(0);
+    if (bodyIdx >= NUM_BODIES) return;
+
+    float bx = x[bodyIdx];
+    float by = y[bodyIdx];
+    float bz = z[bodyIdx];
+    float bm = mass[bodyIdx];
+
+    float ax = 0.0f, ay = 0.0f, az = 0.0f;
+
+    // Private stack — one per thread, lives in registers
+    int stack[64];
+    int stackTop = 0;
+    stack[stackTop++] = 0; // start at root
+
+    while (stackTop > 0)
+    {
+        int node = stack[--stackTop];
+
+        for (int i = 0; i < 8; i++)
+        {
+            int c = child[node * 8 + i];
+
+            if (c == EMPTY) continue;
+
+            float cx, cy, cz, cm;
+
+            if (c < NUM_BODIES)
+            {
+                if (c == bodyIdx) continue;
+
+                cx = x[c];
+                cy = y[c];
+                cz = z[c];
+                cm = mass[c];
+
+                float dx    = cx - bx;
+                float dy    = cy - by;
+                float dz    = cz - bz;
+                float dist2 = dx*dx + dy*dy + dz*dz + SOFTENING*SOFTENING;
+                float dist  = sqrt(dist2);
+                float force = G * bm * cm / dist2;
+
+                ax += force * dx / dist;
+                ay += force * dy / dist;
+                az += force * dz / dist;
+            }
+            else
+            {
+                int childNode = c - NUM_BODIES;
+
+                cx = nodeX[childNode];
+                cy = nodeY[childNode];
+                cz = nodeZ[childNode];
+                cm = nodeMass[childNode];
+
+                float dx   = cx - bx;
+                float dy   = cy - by;
+                float dz   = cz - bz;
+                float dist = sqrt(dx*dx + dy*dy + dz*dz + SOFTENING*SOFTENING);
+                float size = nodeSize[childNode];
+
+                if ((size / dist) < THETA)
+                {
+                    float force = G * bm * cm / (dist * dist);
+
+                    ax += force * dx / dist;
+                    ay += force * dy / dist;
+                    az += force * dz / dist;
+                }
+                else
+                {
+                    if (stackTop < 64)
+                        stack[stackTop++] = childNode;
+                }
+            }
+        }
+    }
+
+    fx[bodyIdx] = ax;
+    fy[bodyIdx] = ay;
+    fz[bodyIdx] = az;
+}
+
+__kernel void integrationKernel(
+    __global float* x,  __global float* y,  __global float* z,
+    __global float* vx, __global float* vy, __global float* vz,
+    __global float* fx, __global float* fy, __global float* fz,
+    __global float* mass)
+{
+    int i = get_global_id(0);
+    if (i >= NUM_BODIES) return;
+
+    float inv_mass = 1.0f / mass[i];
+
+    // Acceleration from force
+    float ax = fx[i] * inv_mass;
+    float ay = fy[i] * inv_mass;
+    float az = fz[i] * inv_mass;
+
+    // Update velocity
+    vx[i] += ax * DT;
+    vy[i] += ay * DT;
+    vz[i] += az * DT;
+
+    // Update position
+    x[i] += vx[i] * DT;
+    y[i] += vy[i] * DT;
+    z[i] += vz[i] * DT;
+}

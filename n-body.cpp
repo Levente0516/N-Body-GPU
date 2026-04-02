@@ -87,10 +87,8 @@ int main()
     cl::Kernel initTreeKernel(program, "initTreeKernel");
     cl::Kernel insertKernel(program, "insertBodiesKernel");
     cl::Kernel comKernel(program, "computeCOMKernel");
-    /*
     cl::Kernel forceKernel(program, "forceKernel");
     cl::Kernel integKernel(program, "integrationKernel");
-    */
 
 #pragma endregion
 
@@ -137,6 +135,8 @@ int main()
     std::vector<float> h_fx(NUM_BODIES), h_fy(NUM_BODIES), h_fz(NUM_BODIES);
     std::vector<float> h_mass(NUM_BODIES);
 
+    std::vector<float> h_x_out(NUM_BODIES), h_y_out(NUM_BODIES), h_z_out(NUM_BODIES); // testing
+
     for (int i = 0; i < NUM_BODIES; i++)
     {
         h_x[i] = (float)((rand() % 10000) - 5000);
@@ -175,7 +175,7 @@ int main()
     cl::NDRange globalTree(MAX_NODE);
     cl::NDRange one(1);
 
-     for (int step = 0; step < 10; step++)
+     for (int step = 0; step < 100; step++)
     {
         // 1. Reset bounding box
         resetBBoxKernel.setArg(0, buf_bbox);
@@ -235,13 +235,48 @@ int main()
         queue.finish();
 
         // 6. Forces
-        // TODO
+        forceKernel.setArg(0, buf_child);
+        forceKernel.setArg(1, buf_nodeX);
+        forceKernel.setArg(2, buf_nodeY);
+        forceKernel.setArg(3, buf_nodeZ);
+        forceKernel.setArg(4, buf_nodeMass);
+        forceKernel.setArg(5, buf_nodeSize);
+        forceKernel.setArg(6, buf_nextNode);
+        forceKernel.setArg(7, buf_x);
+        forceKernel.setArg(8, buf_y);
+        forceKernel.setArg(9, buf_z);
+        forceKernel.setArg(10, buf_fx);
+        forceKernel.setArg(11, buf_fy);
+        forceKernel.setArg(12, buf_fz);
+        forceKernel.setArg(13, buf_mass);
+        queue.enqueueNDRangeKernel(forceKernel, cl::NullRange, cl::NDRange(1), cl::NDRange(1));
+        queue.finish();
 
         // 7. Integration
-        // TODO
-
+        integKernel.setArg(0, buf_x);
+        integKernel.setArg(1, buf_y);
+        integKernel.setArg(2, buf_z);
+        integKernel.setArg(3, buf_vx);
+        integKernel.setArg(4, buf_vy);
+        integKernel.setArg(5, buf_vz);
+        integKernel.setArg(6, buf_fx);
+        integKernel.setArg(7, buf_fy);
+        integKernel.setArg(8, buf_fz);
+        integKernel.setArg(9, buf_mass);
+        queue.enqueueNDRangeKernel(integKernel, cl::NullRange, global, local);
         queue.finish();
+
+        queue.enqueueReadBuffer(buf_x, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_x_out.data());
+        queue.enqueueReadBuffer(buf_y, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_y_out.data());
+        queue.enqueueReadBuffer(buf_z, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_z_out.data());
+
+        std::cout << "Step " << step << " | Body 0: ("
+                << h_x_out[0] << ", " << h_y_out[0] << ", " << h_z_out[0] << ")\n";
     }
+
+#pragma endregion
+
+#pragma region READBACK
 
     std::vector<float> h_bbox(6);
     queue.enqueueReadBuffer(buf_bbox, CL_TRUE, 0, 6*sizeof(float), h_bbox.data());
@@ -250,11 +285,7 @@ int main()
     std::cout << "  Y: " << h_bbox[2] << " -> " << h_bbox[3] << std::endl;
     std::cout << "  Z: " << h_bbox[4] << " -> " << h_bbox[5] << std::endl;
 
-#pragma endregion
-
-#pragma region READBACK
-
-    std::vector<float> h_x_out(NUM_BODIES), h_y_out(NUM_BODIES), h_z_out(NUM_BODIES);
+    //std::vector<float> h_x_out(NUM_BODIES), h_y_out(NUM_BODIES), h_z_out(NUM_BODIES);
     queue.enqueueReadBuffer(buf_x, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_x_out.data());
     queue.enqueueReadBuffer(buf_y, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_y_out.data());
     queue.enqueueReadBuffer(buf_z, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_z_out.data());
