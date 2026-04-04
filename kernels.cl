@@ -401,4 +401,27 @@ __kernel void integrationKernel(
     x[i] += vx[i] * DT;
     y[i] += vy[i] * DT;
     z[i] += vz[i] * DT;
+
+    float speed = sqrt(vx[i]*vx[i] + vy[i]*vy[i] + vz[i]*vz[i]);
+    float maxSpeed = 50000.0f; // tune this based on your units
+
+    if (speed > maxSpeed)
+    {
+        float scale = maxSpeed / speed;
+        vx[i] *= scale;
+        vy[i] *= scale;
+        vz[i] *= scale;
+    }
+}
+
+__kernel void writePositionsInterleaved(
+    __global float* x, __global float* y, __global float* z,
+    __global float* out)  // interleaved x,y,z for Vulkan
+{
+    int i = get_global_id(0);
+    if (i >= NUM_BODIES) return;
+
+    out[i * 3 + 0] = x[i];
+    out[i * 3 + 1] = y[i];
+    out[i * 3 + 2] = z[i];
 }
