@@ -9,6 +9,7 @@
 #include <set>
 #include <algorithm>
 #include <functional>
+#include <cstring> 
 #define NOMINMAX  
 #define VK_USE_PLATFORM_WIN32_KHR
 #define GLFW_INCLUDE_VULKAN
@@ -24,6 +25,52 @@
 #else
 #include <CL/opencl.hpp>
 #endif
+
+struct Mat4 { float m[16] = {}; };
+
+Mat4 mat4Multiply(const Mat4& a, const Mat4& b)
+{
+    Mat4 result;
+    for (int row = 0; row < 4; row++)
+        for (int col = 0; col < 4; col++)
+            for (int k = 0; k < 4; k++)
+                result.m[row*4+col] += a.m[row*4+k] * b.m[k*4+col];
+    return result;
+}
+
+Mat4 mat4Perspective(float fovy, float aspect, float zNear, float zFar)
+{
+    Mat4 m;
+    float f = 1.0f / tan(fovy * 0.5f);
+    m.m[0]  = f / aspect;
+    m.m[5]  = f;
+    m.m[10] = (zFar + zNear) / (zNear - zFar);
+    m.m[11] = -1.0f;
+    m.m[14] = (2.0f * zFar * zNear) / (zNear - zFar);
+    return m;
+}
+
+Mat4 mat4LookAt(float eyeX, float eyeY, float eyeZ,
+                float cx,   float cy,   float cz,
+                float ux,   float uy,   float uz)
+{
+    float fx = cx-eyeX, fy = cy-eyeY, fz = cz-eyeZ;
+    float flen = sqrt(fx*fx+fy*fy+fz*fz);
+    fx/=flen; fy/=flen; fz/=flen;
+
+    float rx = fy*uz-fz*uy, ry = fz*ux-fx*uz, rz = fx*uy-fy*ux;
+    float rlen = sqrt(rx*rx+ry*ry+rz*rz);
+    rx/=rlen; ry/=rlen; rz/=rlen;
+
+    float ux2 = ry*fz-rz*fy, uy2 = rz*fx-rx*fz, uz2 = rx*fy-ry*fx;
+
+    Mat4 m;
+    m.m[0]=rx;  m.m[4]=ry;  m.m[8]=rz;  m.m[12]=-(rx*eyeX+ry*eyeY+rz*eyeZ);
+    m.m[1]=ux2; m.m[5]=uy2; m.m[9]=uz2; m.m[13]=-(ux2*eyeX+uy2*eyeY+uz2*eyeZ);
+    m.m[2]=-fx; m.m[6]=-fy; m.m[10]=-fz;m.m[14]=(fx*eyeX+fy*eyeY+fz*eyeZ);
+    m.m[15]=1.0f;
+    return m;
+}
 
 struct QueueFamilyIndices
 {
@@ -143,7 +190,7 @@ class Simulation
             std::cout << mode->width <<  " " << mode->height << std::endl;
 
             glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-            //glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+            glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
             window = glfwCreateWindow(mode->width, mode->height, "Window", nullptr, nullptr);
             glfwMakeContextCurrent(window);
@@ -383,6 +430,7 @@ class Simulation
             createInfo.enabledExtensionCount   = static_cast<uint32_t>(deviceExtensions.size());
             createInfo.ppEnabledExtensionNames = deviceExtensions.data();
             createInfo.enabledLayerCount       = 0;
+            deviceFeatures.largePoints         = VK_TRUE; 
 
             if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) != VK_SUCCESS)
                 throw std::runtime_error("Failed to create logical device!");
@@ -695,6 +743,14 @@ class Simulation
             attrDesc.format   = VK_FORMAT_R32G32B32_SFLOAT;  // vec3
             attrDesc.offset   = 0;
 
+            VkPipelineDepthStencilStateCreateInfo depthStencil{};
+            depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+            depthStencil.depthTestEnable = VK_TRUE;
+            depthStencil.depthWriteEnable = VK_TRUE;
+            depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+            depthStencil.depthBoundsTestEnable = VK_FALSE;
+            depthStencil.stencilTestEnable = VK_FALSE;
+
             VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
             vertexInputInfo.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
             vertexInputInfo.vertexBindingDescriptionCount   = 1;
@@ -775,7 +831,7 @@ class Simulation
             VkPushConstantRange pushRange{};
             pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
             pushRange.offset     = 0;
-            pushRange.size       = sizeof(float) * 4;
+            pushRange.size       = sizeof(float) * 16;
 
             // Pipeline layout — no uniforms yet
             VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
@@ -802,6 +858,7 @@ class Simulation
             pipelineInfo.layout              = pipelineLayout;
             pipelineInfo.renderPass          = renderPass;
             pipelineInfo.subpass             = 0;
+            pipelineInfo.pDepthStencilState = &depthStencil;
 
             if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS)
             {
@@ -1227,6 +1284,17 @@ int main()
     std::vector<float> h_fx(NUM_BODIES), h_fy(NUM_BODIES), h_fz(NUM_BODIES);
     std::vector<float> h_mass(NUM_BODIES);
 
+    
+    /*
+    h_x[0] = 0;
+    h_y[0] = 0;
+    h_z[0] = 0;
+    h_mass[0] = (float)(NUM_BODIES - 1) * 100.0f;
+    h_vx[0] = 0.0f;
+    h_vy[0] = 0.0f;
+    h_vz[0] = 0.0f;
+    */
+
     for (int i = 0; i < NUM_BODIES; i++)
     {
         // Random angle and radius in a disk
@@ -1234,21 +1302,24 @@ int main()
         float radius = ((float)rand() / RAND_MAX) * (SPAWN_RANGE / 2.0f);
 
         // Thin disk — z is small compared to x,y
-        float diskHeight = SPAWN_RANGE;
+        float diskHeight = SPAWN_RANGE / 20.0f;
 
         h_x[i] = radius * cos(angle);
         h_y[i] = radius * sin(angle);
         h_z[i] = (float)((rand() % (int)diskHeight) - diskHeight / 2.0f);
 
-        // Orbital velocity — bodies orbit the center
         float totalMass = (float)NUM_BODIES * 12000.0f;
 
-        // Never let radius go below this for velocity calc
         float safeRadius = fmax(radius, SPAWN_RANGE / 10.0f);
-        float orbitSpeed = sqrt(G * totalMass / safeRadius) * 0.3f;
 
-        h_vx[i] =  sin(angle) * orbitSpeed;
-        h_vy[i] = -cos(angle) * orbitSpeed;
+        float orbitSpeed = sqrt(G * totalMass / safeRadius);
+
+        h_vx[i] = (float)sin(angle) * orbitSpeed * 0.2f;
+        h_vy[i] = (float)-cos(angle) * orbitSpeed * 0.2f;
+        /*
+        h_vx[i] = 0.0f;
+        h_vy[i] = 0.0f;
+        */
         h_vz[i] = 0.0f;
 
         h_mass[i] = 10000.0f;
@@ -1281,17 +1352,24 @@ int main()
     {
         sim.init();
 
-        // Get pointer to Vulkan's vertex buffer memory
         void* mappedPtr = sim.getMappedVertexBuffer();
 
-        // Create OpenCL buffer pointing to Vulkan memory — must exist before lambda
+        // Create buf_pos with ALLOC_HOST_PTR — tells OpenCL to use host-accessible memory
         cl::Buffer buf_pos(
             context,
-            CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR,
-            sizeof(float) * 3 * NUM_BODIES,
-            mappedPtr
+            CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR,
+            sizeof(float) * 3 * NUM_BODIES
         );
-        std::cout << "Shared memory buffer created" << std::endl;
+
+        // Map it once — on integrated GPU this returns pointer to actual GPU memory, no copy
+        void* clMappedPtr = queue.enqueueMapBuffer(
+            buf_pos, CL_TRUE, CL_MAP_READ | CL_MAP_WRITE,
+            0, sizeof(float) * 3 * NUM_BODIES
+        );
+
+        // Point Vulkan's vertex buffer at the SAME memory
+        // Unmap first, then persistently map Vulkan to same address
+        queue.enqueueUnmapMemObject(buf_pos, clMappedPtr);
 
         // Lambda defined AFTER buf_pos — captures the correct one
         auto simulateStep = [&]()
@@ -1391,6 +1469,10 @@ int main()
             writePositionsKernel.setArg(2, buf_z);
             writePositionsKernel.setArg(3, buf_pos);
             queue.enqueueNDRangeKernel(writePositionsKernel, cl::NullRange, global, local);
+            queue.finish();
+
+            queue.enqueueReadBuffer(buf_pos, CL_TRUE, 0,
+                sizeof(float) * 3 * NUM_BODIES, mappedPtr);
             queue.finish();
         };
 

@@ -356,7 +356,7 @@ __kernel void forceKernel(
 
                 if ((size / dist) < THETA)
                 {
-                    float force = G * bm * cm / (dist * dist);
+                    float force = G *  mass[bodyIdx] * cm / (dist * dist);
 
                     ax += force * dx / dist;
                     ay += force * dy / dist;
