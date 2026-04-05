@@ -1198,6 +1198,11 @@ int main()
 
     std::cout << "Using device: " << device.getInfo<CL_DEVICE_NAME>() << std::endl;
 
+    cl_uint compute_units = device.getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
+    std::cout << "Compute Units: " << compute_units << std::endl;
+
+    std::cout << device.getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>() << std::endl;
+
 #pragma endregion
 
 #pragma region CONTEXT
@@ -1471,9 +1476,9 @@ int main()
             queue.enqueueNDRangeKernel(writePositionsKernel, cl::NullRange, global, local);
             queue.finish();
 
-            queue.enqueueReadBuffer(buf_pos, CL_TRUE, 0,
+            queue.enqueueReadBuffer(buf_pos, CL_FALSE, 0,
                 sizeof(float) * 3 * NUM_BODIES, mappedPtr);
-            queue.finish();
+
         };
 
         sim.loop(simulateStep);

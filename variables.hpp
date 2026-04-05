@@ -1,7 +1,7 @@
 #ifndef VARIABLES_H
 #define VARIBALES_H
 
-#define NUM_BODIES          1024
+#define NUM_BODIES          16384
 #define MAX_NODE            (NUM_BODIES * 4)
 #define THREADS             256
 #define SPAWN_RANGE         2000000.0f
