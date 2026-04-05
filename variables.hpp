@@ -10,6 +10,6 @@
 #define THETA               0.5f
 #define G                   1.0f
 #define SOFTENING           1000.0f
-#define DT                  15.0f 
+#define DT                  8.0f 
 
 #endif

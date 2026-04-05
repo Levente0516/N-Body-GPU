@@ -188,7 +188,7 @@ __kernel void insertBodiesKernel(
             int newNode = atomic_add((volatile __global int*)nextNode, 1);
             if (newNode >= MAX_NODE)
             {
-                *slot    = c;
+                *slot = c;
                 inserted = true;
                 break;
             }
