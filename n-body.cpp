@@ -133,7 +133,7 @@ class Simulation
             return mappedVertexBuffer;
         }
 
-        float camZoom   = 1.0f;
+        float camZoom   = 1.1f;
         float camX      = 0.0f;
         float camY      = 0.0f;
         bool  dragging  = false;
@@ -262,6 +262,7 @@ class Simulation
             createGraphicsPipeline();
             createFramebuffers();
             createVertexBuffer();
+            getSharedMemoryHandle();
             createCommandPool();
             createSyncObjects(); 
         }
