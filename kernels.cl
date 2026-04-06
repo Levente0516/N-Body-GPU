@@ -24,16 +24,6 @@ void atomicMaxFloat(__global float* addr, float val)
     } while (atomic_cmpxchg(addr_i, old, newVal) != old);
 }
 
-__kernel void resetBBoxKernel(__global float* bbox)
-{
-    bbox[0] =  1e30f;
-    bbox[1] = -1e30f;
-    bbox[2] =  1e30f;
-    bbox[3] = -1e30f;
-    bbox[4] =  1e30f;
-    bbox[5] = -1e30f;
-}
-
 __kernel void boundingBoxKernel(
     __global float* bbox, __global float* buf_x,
     __global float* buf_y, __global float* buf_z)
@@ -44,6 +34,16 @@ __kernel void boundingBoxKernel(
     __local float sMaxY[THREADS];
     __local float sMinZ[THREADS];
     __local float sMaxZ[THREADS];
+
+    if (get_global_id(0) == 0)
+    {
+        bbox[0] =  1e30f;
+        bbox[1] = -1e30f;
+        bbox[2] =  1e30f;
+        bbox[3] = -1e30f;
+        bbox[4] =  1e30f;
+        bbox[5] = -1e30f;
+    }
 
     int tid = get_local_id(0);
     int gid = get_global_id(0);
@@ -226,60 +226,54 @@ __kernel void insertBodiesKernel(
 
 __kernel void computeCOMKernel(
     __global int*   child,
-    __global float* nodeX,    __global float* nodeY,    __global float* nodeZ,
-    __global float* nodeMass, __global int*   nodeCount,
-    __global float* x,        __global float* y,        __global float* z,
+    __global float* nodeX,  __global float* nodeY,  __global float* nodeZ,
+    __global float* nodeMass, __global int* nodeCount,
+    __global float* x, __global float* y, __global float* z,
     __global float* mass,
-    __global int*   nextNode)
+    __global int*   nextNode,
+    int             startNode,
+    int             endNode)
 {
-    if (get_global_id(0) != 0) return;
+    int node = get_global_id(0) - startNode;
+    if (node >= endNode) return;
 
-    int totalNodes = nextNode[0];
+    float totalMass = 0.0f;
+    float cx = 0.0f, cy = 0.0f, cz = 0.0f;
+    int   count = 0;
 
-    // Bottom-up: children always have higher indices than parents
-    for (int node = totalNodes - 1; node >= 0; node--)
+    for (int i = 0; i < 8; i++)
     {
-        float totalMass = 0.0f;
-        float cx = 0.0f, cy = 0.0f, cz = 0.0f;
-        int   count = 0;
+        int c = child[node * 8 + i];
+        if (c == EMPTY) continue;
 
-        for (int i = 0; i < 8; i++)
+        if (c < NUM_BODIES)
         {
-            int c = child[node * 8 + i];
-
-            if (c == EMPTY) continue;
-
-            if (c < NUM_BODIES)
-            {
-                // Leaf — use body data directly
-                float m = mass[c];
-                totalMass += m;
-                cx += x[c] * m;
-                cy += y[c] * m;
-                cz += z[c] * m;
-                count++;
-            }
-            else
-            {
-                // Internal node — already computed (higher index processed first)
-                int childNode = c - NUM_BODIES;
-                float m = nodeMass[childNode];
-                totalMass += m;
-                cx += nodeX[childNode] * m;
-                cy += nodeY[childNode] * m;
-                cz += nodeZ[childNode] * m;
-                count += nodeCount[childNode];
-            }
+            float m = mass[c];
+            totalMass += m;
+            cx += x[c] * m;
+            cy += y[c] * m;
+            cz += z[c] * m;
+            count++;
         }
-
-        if (totalMass > 0.0f)
+        else
         {
-            nodeX[node]     = cx / totalMass;
-            nodeY[node]     = cy / totalMass;
-            nodeZ[node]     = cz / totalMass;
-            nodeMass[node]  = totalMass;
-            nodeCount[node] = count;
+            int childNode = c - NUM_BODIES;
+            float m = nodeMass[childNode];
+            totalMass += m;
+            cx += nodeX[childNode] * m;
+            cy += nodeY[childNode] * m;
+            cz += nodeZ[childNode] * m;
+            count += nodeCount[childNode];
         }
+    }
+
+    if (totalMass > 0.0f)
+    {
+        nodeX[node]     = cx / totalMass;
+        nodeY[node]     = cy / totalMass;
+        nodeZ[node]     = cz / totalMass;
+        nodeMass[node]  = totalMass;
+        nodeCount[node] = count;
     }
 }
 
@@ -317,55 +311,44 @@ __kernel void forceKernel(
 
             if (c == EMPTY) continue;
 
-            float cx, cy, cz, cm;
+            float dx, dy, dz, dist2, dist, force;
 
             if (c < NUM_BODIES)
             {
                 if (c == bodyIdx) continue;
 
-                cx = x[c];
-                cy = y[c];
-                cz = z[c];
-                cm = mass[c];
-
-                float dx    = cx - bx;
-                float dy    = cy - by;
-                float dz    = cz - bz;
+                dx = x[c] - bx;
+                dy = y[c] - by;
+                dz = z[c] - bz;
                 float dist2 = dx*dx + dy*dy + dz*dz + SOFTENING*SOFTENING;
+                if (dist2 > 1e12f) continue; 
                 float dist  = sqrt(dist2);
-                float force = G * bm * cm / dist2;
+                float force = G * bm * mass[c] / dist2;
 
-                ax += force * dx / dist;
-                ay += force * dy / dist;
-                az += force * dz / dist;
+                ax += force * (dx / dist);
+                ay += force * (dy / dist);
+                az += force * (dz / dist);
             }
             else
             {
                 int childNode = c - NUM_BODIES;
 
-                cx = nodeX[childNode];
-                cy = nodeY[childNode];
-                cz = nodeZ[childNode];
-                cm = nodeMass[childNode];
-
-                float dx   = cx - bx;
-                float dy   = cy - by;
-                float dz   = cz - bz;
+                dx = nodeX[childNode] - bx;
+                dy = nodeY[childNode] - by;
+                dz = nodeZ[childNode] - bz;
                 float dist = sqrt(dx*dx + dy*dy + dz*dz + SOFTENING*SOFTENING);
-                float size = nodeSize[childNode];
+                if (dist > 1e12f) continue; 
 
-                if ((size / dist) < THETA)
+                if ((nodeSize[childNode] / dist) < THETA)
                 {
-                    float force = G * bm * cm / (dist * dist);
-
-                    ax += force * dx / dist;
-                    ay += force * dy / dist;
-                    az += force * dz / dist;
+                    force = G * bm * nodeMass[childNode] / dist2;
+                    ax += force * (dx / dist);
+                    ay += force * (dy / dist);
+                    az += force * (dz / dist);
                 }
-                else
+                else if (stackTop < 64)
                 {
-                    if (stackTop < 64)
-                        stack[stackTop++] = childNode;
+                    stack[stackTop++] = childNode;
                 }
             }
         }
@@ -375,6 +358,7 @@ __kernel void forceKernel(
     fy[bodyIdx] = ay;
     fz[bodyIdx] = az;
 }
+
 
 __kernel void integrationKernel(
     __global float* x,  __global float* y,  __global float* z,
@@ -402,8 +386,10 @@ __kernel void integrationKernel(
     y[i] += vy[i] * DT;
     z[i] += vz[i] * DT;
 
+
+    /*
     float speed = sqrt(vx[i]*vx[i] + vy[i]*vy[i] + vz[i]*vz[i]);
-    float maxSpeed = 50000.0f; // tune this based on your units
+    float maxSpeed = 15.0f; // tune this based on your units
 
     if (speed > maxSpeed)
     {
@@ -412,6 +398,7 @@ __kernel void integrationKernel(
         vy[i] *= scale;
         vz[i] *= scale;
     }
+    */
 }
 
 __kernel void writePositionsInterleaved(

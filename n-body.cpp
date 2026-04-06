@@ -10,6 +10,7 @@
 #include <functional>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#include <chrono>
 #define NOMINMAX
 #include <windows.h>
 
@@ -28,6 +29,8 @@
 // Windows OpenCL-GL interop
 #include <CL/cl_gl.h>
 #include <wingdi.h>
+
+
 
 // ─── OpenGL shader helpers ────────────────────────────────────────────────────
 
@@ -68,7 +71,7 @@ GLuint createProgram(const std::string& vertSrc, const std::string& fragSrc)
 class Simulation
 {
 public:
-    float camZoom        = 2.0f / SPAWN_RANGE; 
+    float camZoom        = 2.0f / (SPAWN_RANGE * CAMERAZOOM * 2.0f); 
     float camX           = 0.0f;
     float camY           = 0.0f;
     bool  dragging       = false;
@@ -112,7 +115,7 @@ private:
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
-        std::cout << "GLFW init\n";
+        std::cout << "GLFW  init\n";
 
         GLFWmonitor* monitor = glfwGetPrimaryMonitor();
         const GLFWvidmode* mode = glfwGetVideoMode(monitor);
@@ -121,8 +124,6 @@ private:
         window = glfwCreateWindow(mode->width, mode->height, "N-Body", nullptr, nullptr);
         glfwMakeContextCurrent(window);
         glfwSwapInterval(0); // disable vsync for max speed
-
-        std::cout << "Window created\n";
 
         gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
 
@@ -209,7 +210,7 @@ private:
 
     void drawFrame()
     {
-        glFinish();
+        //glFinish();
         int w, h;
         glfwGetFramebufferSize(window, &w, &h);
         glViewport(0, 0, w, h);
@@ -263,7 +264,7 @@ int main()
     // Check for cl_khr_gl_sharing
     std::string exts = device.getInfo<CL_DEVICE_EXTENSIONS>();
     bool hasGLSharing = exts.find("cl_khr_gl_sharing") != std::string::npos;
-    std::cout << "cl_khr_gl_sharing: " << (hasGLSharing ? "YES" : "NO") << std::endl;
+    std::cout << "cl_khr_gl_sharng: " << (hasGLSharing ? "YES" : "NO") << std::endl;
 
     // ── Create OpenCL context sharing with OpenGL ───────────────────────────
     cl_context_properties props[] = {
@@ -295,14 +296,17 @@ int main()
     sources.push_back(configSrc);
     sources.push_back(kernelSrc);
 
+    std::string buildOptions = "-cl-fast-relaxed-math -cl-mad-enable -cl-no-signed-zeros";
+
     cl::Program program(context, sources);
-    try { program.build({ device }); }
+    try {     
+        program.build({ device }, buildOptions.c_str()); 
+    }
     catch (const cl::Error&) {
         std::cerr << "Build error:\n" << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device) << std::endl;
         return 1;
     }
 
-    cl::Kernel resetBBoxKernel    (program, "resetBBoxKernel");
     cl::Kernel boundingBoxKernel  (program, "boundingBoxKernel");
     cl::Kernel initTreeKernel     (program, "initTreeKernel");
     cl::Kernel insertKernel       (program, "insertBodiesKernel");
@@ -365,25 +369,63 @@ int main()
     std::vector<float> h_vx(NUM_BODIES), h_vy(NUM_BODIES), h_vz(NUM_BODIES);
     std::vector<float> h_fx(NUM_BODIES), h_fy(NUM_BODIES), h_fz(NUM_BODIES);
     std::vector<float> h_mass(NUM_BODIES);
+    
+    /* Optional blackhole xd
+    h_x[0] = 0;
+    h_y[0] = 0;
+    h_z[0] = 0;
+    h_mass[0] = (float)(NUM_BODIES - 1) * 1000.0f;
+    h_vx[0] = 0.0f;
+    h_vy[0] = 0.0f;
+    h_vz[0] = 0.0f;
+    */    
+
+
+    float totalSystemMass = 0.00f;
 
     for (int i = 0; i < NUM_BODIES; i++)
     {
-        float angle  = ((float)rand() / RAND_MAX) * 2.0f * 3.14159f;
-        float radius = ((float)rand() / RAND_MAX) * (SPAWN_RANGE / 2.0f);
-        float diskHeight = SPAWN_RANGE / 20.0f;
+        float massFactor = pow(((float)rand() / RAND_MAX), 2.0f);
+        h_mass[i] = 5000.0f + massFactor * 50000.0f;
+        totalSystemMass += h_mass[i];
+    }
+
+    for (int i = 0; i < NUM_BODIES; i++)
+    {
+        // Gaussian-like distribution using multiple random numbers
+        float angle = ((float)rand() / RAND_MAX) * 2.0f * 3.14159f;
+        float radius = 0.0f;
+        for (int j = 0; j < CAMERAZOOM; j++) {  // can change the distribution by chnaging Camerazoom
+            radius += (((float)rand() / RAND_MAX) * SPAWN_RANGE);
+        }
+        //radius = (radius / 3.0f) * (SPAWN_RANGE / 2.0f);  // More points near center
+
+        float z = ((float)rand() / RAND_MAX - 0.5f) * (SPAWN_RANGE / 30.0f);
 
         h_x[i] = radius * cos(angle);
         h_y[i] = radius * sin(angle);
-        h_z[i] = ((float)rand() / RAND_MAX - 0.5f) * diskHeight;
-
-        float totalMass  = (float)NUM_BODIES * 12000.0f;
-        float safeRadius = fmax(radius, SPAWN_RANGE / 10.0f);
-        float orbitSpeed = sqrt(G * totalMass / safeRadius) * 0.2f;
-
-        h_vx[i] =  sin(angle) * orbitSpeed;
-        h_vy[i] = -cos(angle) * orbitSpeed;
-        h_vz[i] = 0.0f;
-        h_mass[i] = 10000.1f;
+        h_z[i] = z;
+        
+        
+        // Rotation curve: faster in center, flat in outer regions
+        float orbitalVelocity;
+        float coreRadius = SPAWN_RANGE / 8.0f;
+        
+        if (radius < coreRadius) {
+            // Solid body rotation in core
+            orbitalVelocity = radius / coreRadius * 200.0f;
+        } else {
+            // Flat rotation curve in disk
+            orbitalVelocity = 200.0f * sqrt(coreRadius / radius);
+        }
+        
+        // Add random dispersion
+        float velocityDispersion = 20.0f * (1.0f - radius / (SPAWN_RANGE / 2.0f));
+        float randomAngle = ((float)rand() / RAND_MAX) * 2.0f * 3.14159f;
+        
+        h_vx[i] = -sin(angle) * orbitalVelocity;
+        h_vy[i] =  cos(angle) * orbitalVelocity;
+        h_vz[i] = ((float)rand() / RAND_MAX - 0.5f) * velocityDispersion * 0.5f;
     }
 
     queue.enqueueWriteBuffer(buf_x,    CL_TRUE, 0, NUM_BODIES*sizeof(float), h_x.data());
@@ -402,22 +444,17 @@ int main()
     cl::NDRange local(THREADS);
     cl::NDRange globalTree(MAX_NODE);
     cl::NDRange one(1);
+    cl::NDRange localBBox(64);
 
     auto simulateStep = [&]()
     {
-        glFinish();
-        // 1. Reset bbox
-        resetBBoxKernel.setArg(0, buf_bbox);
-        queue.enqueueNDRangeKernel(resetBBoxKernel, cl::NullRange, one, one);
-        queue.finish();
-
         // 2. Bounding box
         boundingBoxKernel.setArg(0, buf_bbox);
         boundingBoxKernel.setArg(1, buf_x);
         boundingBoxKernel.setArg(2, buf_y);
         boundingBoxKernel.setArg(3, buf_z);
-        queue.enqueueNDRangeKernel(boundingBoxKernel, cl::NullRange, global, local);
-        queue.finish();
+        queue.enqueueNDRangeKernel(boundingBoxKernel, cl::NullRange, global, localBBox);
+        //queue.finish();
 
         // 3. Init tree
         initTreeKernel.setArg(0, buf_child);
@@ -430,7 +467,7 @@ int main()
         initTreeKernel.setArg(7, buf_nextNode);
         initTreeKernel.setArg(8, buf_bbox);
         queue.enqueueNDRangeKernel(initTreeKernel, cl::NullRange, globalTree, local);
-        queue.finish();
+        //queue.finish();
 
         // 4. Insert
         insertKernel.setArg(0, buf_child);
@@ -446,7 +483,7 @@ int main()
         insertKernel.setArg(10, buf_z);
         insertKernel.setArg(11, buf_mass);
         queue.enqueueNDRangeKernel(insertKernel, cl::NullRange, global, local);
-        queue.finish();
+        //queue.finish();
 
         // 5. COM
         comKernel.setArg(0, buf_child);
@@ -460,8 +497,10 @@ int main()
         comKernel.setArg(8, buf_z);
         comKernel.setArg(9, buf_mass);
         comKernel.setArg(10, buf_nextNode);
-        queue.enqueueNDRangeKernel(comKernel, cl::NullRange, cl::NDRange(1), cl::NDRange(1));
-        queue.finish();
+        comKernel.setArg(11, MAX_NODE);
+        comKernel.setArg(12, 0); 
+        queue.enqueueNDRangeKernel(comKernel, cl::NullRange, global, local);
+        //queue.finish();
             
         // 6. Forces
         forceKernel.setArg(0, buf_child);
@@ -479,7 +518,7 @@ int main()
         forceKernel.setArg(12, buf_fz);
         forceKernel.setArg(13, buf_mass);
         queue.enqueueNDRangeKernel(forceKernel, cl::NullRange, global, local);
-        queue.finish();
+        //queue.finish();
 
         // 7. Integration
         integKernel.setArg(0, buf_x);
@@ -493,7 +532,7 @@ int main()
         integKernel.setArg(8, buf_fz);
         integKernel.setArg(9, buf_mass);
         queue.enqueueNDRangeKernel(integKernel, cl::NullRange, global, local);
-        queue.finish();
+        //queue.finish();
 
         // 8. Write positions to shared VBO
         std::vector<cl::Memory> shared = { buf_pos_gl };
@@ -504,10 +543,11 @@ int main()
         writePositionsKernel.setArg(2, buf_z);
         writePositionsKernel.setArg(3, buf_pos_gl);
         queue.enqueueNDRangeKernel(writePositionsKernel, cl::NullRange, global, local);
-
         queue.enqueueReleaseGLObjects(&shared);
+
         queue.finish();
-        // OpenGL draws directly from VBO — no copy, true GPU interop
+
+
     };
 
     sim.loop(simulateStep);
