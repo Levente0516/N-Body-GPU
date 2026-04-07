@@ -10,11 +10,13 @@
 #include <functional>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <chrono>
 #define NOMINMAX
 #include <windows.h>
 
-// OpenGL first — before OpenCL
 #include <GL/gl.h>
 #include <GLFW/glfw3.h>
 #include "variables.hpp"
@@ -26,10 +28,8 @@
 #include <CL/opencl.hpp>
 #endif
 
-// Windows OpenCL-GL interop
 #include <CL/cl_gl.h>
 #include <wingdi.h>
-
 
 
 // ─── OpenGL shader helpers ────────────────────────────────────────────────────
@@ -71,14 +71,20 @@ GLuint createProgram(const std::string& vertSrc, const std::string& fragSrc)
 class Simulation
 {
 public:
-    float camZoom        = 2.0f / (SPAWN_RANGE * CAMERAZOOM * 2.0f); 
+    float camZoom        = SPAWN_RANGE * CAMERAZOOM * 2.0f;
     float camX           = 0.0f;
     float camY           = 0.0f;
+    float camZ           = 0.0f;
     bool  dragging       = false;
     double dragStartX    = 0.0;
     double dragStartY    = 0.0;
+    double dragStartZ    = 0.0;
     float  dragCamStartX = 0.0f;
     float  dragCamStartY = 0.0f;
+    float  dragCamStartZ = 0.0f;    
+    glm::vec3 camTarget  = glm::vec3(0.0f);; 
+    float camYaw         = 0.0f;
+    float camPitch       = glm::radians(65.0f);
 
     GLFWwindow* window   = nullptr;
     GLuint      vbo      = 0;
@@ -116,14 +122,18 @@ private:
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
         std::cout << "GLFW  init\n";
+        
+        std::cout << camZoom << std::endl; 
 
         GLFWmonitor* monitor = glfwGetPrimaryMonitor();
         const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+
         std::cout << mode->width << " " << mode->height << std::endl;
+        std::cout << "Zoom: " << camZoom << "\n CamX: " << camX << "\n CamY: " << camY << std::endl; 
 
         window = glfwCreateWindow(mode->width, mode->height, "N-Body", nullptr, nullptr);
         glfwMakeContextCurrent(window);
-        glfwSwapInterval(0); // disable vsync for max speed
+        glfwSwapInterval(0);
 
         gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
 
@@ -134,19 +144,35 @@ private:
         glfwSetKeyCallback(window, [](GLFWwindow* w, int key, int, int action, int)
         {
             if (action == GLFW_PRESS && (key == GLFW_KEY_Q || key == GLFW_KEY_ESCAPE))
+            {
                 glfwSetWindowShouldClose(w, GLFW_TRUE);
+            }
         });
 
         glfwSetScrollCallback(window, [](GLFWwindow* w, double, double yOffset)
         {
             auto* sim = reinterpret_cast<Simulation*>(glfwGetWindowUserPointer(w));
-            float factor = (yOffset > 0) ? 1.1f : 0.9f;
+
+            double mouseX, mouseY;
+            glfwGetCursorPos(w, &mouseX, &mouseY);
+            
+            int winW, winH;
+            glfwGetWindowSize(w, &winW, &winH);
+            
+            float worldX = sim->camX + (mouseX / winW - 0.5f) * (SPAWN_RANGE / sim->camZoom);
+            float worldY = sim->camY + (0.5f - mouseY / winH) * (SPAWN_RANGE / sim->camZoom);
+            
+            float oldZoom = sim->camZoom;
+            float factor = (yOffset > 0) ? 0.9f : 1.1f;
             sim->camZoom *= factor;
             
-            // Dynamic bounds based on spawn range
-            float minZoom = 0.1f / SPAWN_RANGE;     // Zoom in limit
-            float maxZoom = 10.0f / SPAWN_RANGE;    // Zoom out limit
-            sim->camZoom = std::max(minZoom, std::min(sim->camZoom, maxZoom));
+            float newWorldX = sim->camX + (mouseX / winW - 0.5f) * (SPAWN_RANGE / sim->camZoom);
+            float newWorldY = sim->camY + (0.5f - mouseY / winH) * (SPAWN_RANGE / sim->camZoom);
+
+            sim->camX += worldX - newWorldX;
+            sim->camY += worldY - newWorldY;
+            
+            std::cout << "Zoom: " << sim->camZoom << "\nCamX: " << sim->camX << "\nCamY: " << sim->camY << std::endl;
         });
 
         glfwSetMouseButtonCallback(window, [](GLFWwindow* w, int button, int action, int)
@@ -161,7 +187,10 @@ private:
                     sim->dragCamStartX = sim->camX;
                     sim->dragCamStartY = sim->camY;
                 }
-                else sim->dragging = false;
+                else 
+                {
+                    sim->dragging = false;
+                }
             }
         });
 
@@ -169,14 +198,24 @@ private:
         {
             auto* sim = reinterpret_cast<Simulation*>(glfwGetWindowUserPointer(w));
             if (!sim->dragging) return;
-            
+
             double dx = xpos - sim->dragStartX;
             double dy = ypos - sim->dragStartY;
-            int winW, winH;
-            glfwGetWindowSize(w, &winW, &winH);
-            
-            sim->camX = sim->dragCamStartX + (dx / winW);
-            sim->camY = sim->dragCamStartY - (dy / winH);
+
+            float sensitivity = 0.005f;
+
+            sim->camYaw   += dx * sensitivity;
+            sim->camPitch += dy * sensitivity;
+
+            // clamp pitch so you don't flip
+            sim->camPitch = glm::clamp(
+                sim->camPitch,
+                glm::radians(-89.0f),
+                glm::radians(89.0f)
+            );
+
+            sim->dragStartX = xpos;
+            sim->dragStartY = ypos;
         });
     }
 
@@ -202,7 +241,9 @@ private:
         
         glEnable(GL_PROGRAM_POINT_SIZE);
         glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE); // additive blending
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        glEnable(GL_DEPTH_TEST);
+        glBlendFunc(GL_ONE, GL_ONE);
 
         std::cout << "OpenGL initialized" << std::endl;
         std::cout << "Renderer: " << glGetString(GL_RENDERER) << std::endl;
@@ -210,17 +251,44 @@ private:
 
     void drawFrame()
     {
-        //glFinish();
         int w, h;
         glfwGetFramebufferSize(window, &w, &h);
         glViewport(0, 0, w, h);
         glClearColor(0, 0, 0, 1);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        float aspect = (float)w / (float)h;
+
+        glm::mat4 projection = glm::perspective(
+            glm::radians(45.0f),  // Field of view
+            aspect,
+            1000.0f,              // Near plane (increase this)
+            SPAWN_RANGE * 100.0f   // Far plane
+        );
+
+        glm::vec3 direction;
+        direction.x = cos(camPitch) * sin(camYaw);
+        direction.y = sin(camPitch);
+        direction.z = -cos(camPitch) * cos(camYaw);
+
+        glm::vec3 position = camTarget - direction * camZoom;
+
+        glm::mat4 view = glm::lookAt(
+            position,
+            camTarget,
+            glm::vec3(0, 1, 0)
+        );
 
         glUseProgram(program);
-        glUniform1f(glGetUniformLocation(program, "zoom"),       camZoom);
-        glUniform2f(glGetUniformLocation(program, "offset"), camX, camY);
-        //glUniform1f(glGetUniformLocation(program, "spawnRange"), SPAWN_RANGE);
+        glUniformMatrix4fv(
+            glGetUniformLocation(program, "projection"),
+            1, GL_FALSE, glm::value_ptr(projection)
+        );
+
+        glUniformMatrix4fv(
+            glGetUniformLocation(program, "view"),
+            1, GL_FALSE, glm::value_ptr(view)
+        );
 
         glBindVertexArray(vao);
         glDrawArrays(GL_POINTS, 0, NUM_BODIES);
@@ -370,27 +438,25 @@ int main()
     std::vector<float> h_fx(NUM_BODIES), h_fy(NUM_BODIES), h_fz(NUM_BODIES);
     std::vector<float> h_mass(NUM_BODIES);
     
-    /* Optional blackhole xd
+    //Optional blackhole xd
     h_x[0] = 0;
     h_y[0] = 0;
     h_z[0] = 0;
-    h_mass[0] = (float)(NUM_BODIES - 1) * 1000.0f;
+    h_mass[0] = (float)(NUM_BODIES) * 100000.0f;
     h_vx[0] = 0.0f;
     h_vy[0] = 0.0f;
-    h_vz[0] = 0.0f;
-    */    
-
+    h_vz[0] = 0.0f; 
 
     float totalSystemMass = 0.00f;
 
-    for (int i = 0; i < NUM_BODIES; i++)
+    for (int i = 1; i < NUM_BODIES; i++)
     {
         float massFactor = pow(((float)rand() / RAND_MAX), 2.0f);
         h_mass[i] = 5000.0f + massFactor * 50000.0f;
         totalSystemMass += h_mass[i];
     }
 
-    for (int i = 0; i < NUM_BODIES; i++)
+    for (int i = 1; i < NUM_BODIES; i++)
     {
         // Gaussian-like distribution using multiple random numbers
         float angle = ((float)rand() / RAND_MAX) * 2.0f * 3.14159f;
@@ -421,7 +487,6 @@ int main()
         
         // Add random dispersion
         float velocityDispersion = 20.0f * (1.0f - radius / (SPAWN_RANGE / 2.0f));
-        float randomAngle = ((float)rand() / RAND_MAX) * 2.0f * 3.14159f;
         
         h_vx[i] = -sin(angle) * orbitalVelocity;
         h_vy[i] =  cos(angle) * orbitalVelocity;
@@ -545,7 +610,7 @@ int main()
         queue.enqueueNDRangeKernel(writePositionsKernel, cl::NullRange, global, local);
         queue.enqueueReleaseGLObjects(&shared);
 
-        queue.finish();
+        queue.flush();
 
 
     };

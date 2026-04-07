@@ -2,7 +2,7 @@ CXX = g++
 CXXFLAGS = 	-I"OpenCL-SDK\external\OpenCL-Headers" \
 			-I"glfw\include" \
 			-I"glad\include" \
-			-I"Vulkan-Headers\include" \
+			-I"glm"\
            	-DCL_TARGET_OPENCL_VERSION=300 
 			-DCL_HPP_TARGET_OPENCL_VERSION=300
 

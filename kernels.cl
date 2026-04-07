@@ -341,7 +341,7 @@ __kernel void forceKernel(
 
                 if ((nodeSize[childNode] / dist) < THETA)
                 {
-                    force = G * bm * nodeMass[childNode] / dist2;
+                    force = G * bm * nodeMass[childNode] / dist;
                     ax += force * (dx / dist);
                     ay += force * (dy / dist);
                     az += force * (dz / dist);
