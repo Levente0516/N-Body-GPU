@@ -234,10 +234,10 @@ __kernel void computeCOMKernel(
     int             startNode,
     int             endNode)
 {
-    int node = get_global_id(0) - startNode;
+    int node = startNode + get_global_id(0);
     if (node >= endNode) return;
 
-    float totalMass = 0.0f;
+    float totalMass = 0.0f; 
     float cx = 0.0f, cy = 0.0f, cz = 0.0f;
     int   count = 0;
 
@@ -296,10 +296,10 @@ __kernel void forceKernel(
 
     float ax = 0.0f, ay = 0.0f, az = 0.0f;
 
-    // Private stack — one per thread, lives in registers
     int stack[64];
     int stackTop = 0;
-    stack[stackTop++] = 0; // start at root
+    stack[stackTop++] = 0; 
+    float force = 0.0f;
 
     while (stackTop > 0)
     {
@@ -308,7 +308,6 @@ __kernel void forceKernel(
         for (int i = 0; i < 8; i++)
         {
             int c = child[node * 8 + i];
-
             if (c == EMPTY) continue;
 
             float dx, dy, dz, dist2, dist, force;
@@ -316,15 +315,12 @@ __kernel void forceKernel(
             if (c < NUM_BODIES)
             {
                 if (c == bodyIdx) continue;
-
                 dx = x[c] - bx;
                 dy = y[c] - by;
                 dz = z[c] - bz;
-                float dist2 = dx*dx + dy*dy + dz*dz + SOFTENING*SOFTENING;
-                if (dist2 > 1e12f) continue; 
-                float dist  = sqrt(dist2);
-                float force = G * bm * mass[c] / dist2;
-
+                dist2 = dx*dx + dy*dy + dz*dz + SOFTENING*SOFTENING;
+                dist  = sqrt(dist2);
+                force = G * bm * mass[c] / dist2;
                 ax += force * (dx / dist);
                 ay += force * (dy / dist);
                 az += force * (dz / dist);
@@ -332,16 +328,15 @@ __kernel void forceKernel(
             else
             {
                 int childNode = c - NUM_BODIES;
-
                 dx = nodeX[childNode] - bx;
                 dy = nodeY[childNode] - by;
                 dz = nodeZ[childNode] - bz;
-                float dist = sqrt(dx*dx + dy*dy + dz*dz + SOFTENING*SOFTENING);
-                if (dist > 1e12f) continue; 
+                dist2 = dx*dx + dy*dy + dz*dz + SOFTENING*SOFTENING;
+                dist  = sqrt(dist2);
 
                 if ((nodeSize[childNode] / dist) < THETA)
                 {
-                    force = G * bm * nodeMass[childNode] / dist;
+                    force = G * bm * nodeMass[childNode] / dist2;
                     ax += force * (dx / dist);
                     ay += force * (dy / dist);
                     az += force * (dz / dist);
@@ -371,39 +366,22 @@ __kernel void integrationKernel(
 
     float inv_mass = 1.0f / mass[i];
 
-    // Acceleration from force
     float ax = fx[i] * inv_mass;
     float ay = fy[i] * inv_mass;
     float az = fz[i] * inv_mass;
 
-    // Update velocity
     vx[i] += ax * DT;
     vy[i] += ay * DT;
     vz[i] += az * DT;
 
-    // Update position
     x[i] += vx[i] * DT;
     y[i] += vy[i] * DT;
     z[i] += vz[i] * DT;
-
-
-    /*
-    float speed = sqrt(vx[i]*vx[i] + vy[i]*vy[i] + vz[i]*vz[i]);
-    float maxSpeed = 15.0f; // tune this based on your units
-
-    if (speed > maxSpeed)
-    {
-        float scale = maxSpeed / speed;
-        vx[i] *= scale;
-        vy[i] *= scale;
-        vz[i] *= scale;
-    }
-    */
 }
 
 __kernel void writePositionsInterleaved(
     __global float* x, __global float* y, __global float* z,
-    __global float* out)  // interleaved x,y,z for Vulkan
+    __global float* out)
 {
     int i = get_global_id(0);
     if (i >= NUM_BODIES) return;

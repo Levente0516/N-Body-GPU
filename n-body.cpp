@@ -129,7 +129,7 @@ private:
         const GLFWvidmode* mode = glfwGetVideoMode(monitor);
 
         std::cout << mode->width << " " << mode->height << std::endl;
-        std::cout << "Zoom: " << camZoom << "\n CamX: " << camX << "\n CamY: " << camY << std::endl; 
+        //std::cout << "Zoom: " << camZoom << "\n CamX: " << camX << "\n CamY: " << camY << std::endl; 
 
         window = glfwCreateWindow(mode->width, mode->height, "N-Body", nullptr, nullptr);
         glfwMakeContextCurrent(window);
@@ -172,7 +172,7 @@ private:
             sim->camX += worldX - newWorldX;
             sim->camY += worldY - newWorldY;
             
-            std::cout << "Zoom: " << sim->camZoom << "\nCamX: " << sim->camX << "\nCamY: " << sim->camY << std::endl;
+            //std::cout << "Zoo: " << sim->camZoom << "\nCamX: " << sim->camX << "\nCamY: " << sim->camY << std::endl;
         });
 
         glfwSetMouseButtonCallback(window, [](GLFWwindow* w, int button, int action, int)
@@ -314,7 +314,6 @@ int main()
 {
     srand(time(NULL));
 
-    // Init simulation window FIRST so OpenGL context exists
     Simulation sim;
     sim.init();
 
@@ -328,8 +327,6 @@ int main()
     cl::Device device = devices[0];
 
     std::cout << "Using device: " << device.getInfo<CL_DEVICE_NAME>() << std::endl;
-
-    // Check for cl_khr_gl_sharing
     std::string exts = device.getInfo<CL_DEVICE_EXTENSIONS>();
     bool hasGLSharing = exts.find("cl_khr_gl_sharing") != std::string::npos;
     std::cout << "cl_khr_gl_sharng: " << (hasGLSharing ? "YES" : "NO") << std::endl;
@@ -406,8 +403,6 @@ int main()
     cl::Buffer buf_flag     (context, CL_MEM_READ_WRITE, sizeof(int));
 
     // ── Shared VBO buffer ───────────────────────────────────────────────────
-    // If GL sharing works this is zero-copy GPU->GPU
-    // If not, falls back to a regular buffer + readback
     cl::BufferGL buf_pos_gl;
     cl::Buffer   buf_pos_fallback;
     bool usingGLSharing = false;
@@ -439,58 +434,52 @@ int main()
     std::vector<float> h_mass(NUM_BODIES);
     
     //Optional blackhole xd
+    /*
     h_x[0] = 0;
     h_y[0] = 0;
     h_z[0] = 0;
-    h_mass[0] = (float)(NUM_BODIES) * 100000.0f;
+    h_mass[0] = 2000000.0f;
     h_vx[0] = 0.0f;
     h_vy[0] = 0.0f;
     h_vz[0] = 0.0f; 
+    */
 
     float totalSystemMass = 0.00f;
 
-    for (int i = 1; i < NUM_BODIES; i++)
+    for (int i = 0; i < NUM_BODIES; i++)
     {
         float massFactor = pow(((float)rand() / RAND_MAX), 2.0f);
         h_mass[i] = 5000.0f + massFactor * 50000.0f;
         totalSystemMass += h_mass[i];
     }
 
-    for (int i = 1; i < NUM_BODIES; i++)
+    for (int i = 0; i < NUM_BODIES; i++)
     {
-        // Gaussian-like distribution using multiple random numbers
         float angle = ((float)rand() / RAND_MAX) * 2.0f * 3.14159f;
         float radius = 0.0f;
-        for (int j = 0; j < CAMERAZOOM; j++) {  // can change the distribution by chnaging Camerazoom
+        for (int j = 0; j < CAMERAZOOM; j++) { 
             radius += (((float)rand() / RAND_MAX) * SPAWN_RANGE);
         }
-        //radius = (radius / 3.0f) * (SPAWN_RANGE / 2.0f);  // More points near center
 
-        float z = ((float)rand() / RAND_MAX - 0.5f) * (SPAWN_RANGE / 30.0f);
+        float z = ((float)rand() / RAND_MAX - 0.5f) * (SPAWN_RANGE / 2.0f);
 
         h_x[i] = radius * cos(angle);
         h_y[i] = radius * sin(angle);
-        h_z[i] = z;
-        
-        
-        // Rotation curve: faster in center, flat in outer regions
-        float orbitalVelocity;
-        float coreRadius = SPAWN_RANGE / 8.0f;
-        
-        if (radius < coreRadius) {
-            // Solid body rotation in core
-            orbitalVelocity = radius / coreRadius * 200.0f;
-        } else {
-            // Flat rotation curve in disk
-            orbitalVelocity = 200.0f * sqrt(coreRadius / radius);
-        }
-        
-        // Add random dispersion
-        float velocityDispersion = 20.0f * (1.0f - radius / (SPAWN_RANGE / 2.0f));
-        
-        h_vx[i] = -sin(angle) * orbitalVelocity;
-        h_vy[i] =  cos(angle) * orbitalVelocity;
-        h_vz[i] = ((float)rand() / RAND_MAX - 0.5f) * velocityDispersion * 0.5f;
+        h_z[i] = 0;
+
+        float bhMass = h_mass[0]; // 1e21
+
+        float r = sqrt(h_x[i]*h_x[i] + h_y[i]*h_y[i]);
+        if (r < 1.0f) r = 1.0f;
+
+        float enclosedMass = bhMass;
+
+        float orbitalVelocity = sqrt(G * enclosedMass / r);
+
+        h_vx[i] =  sin(angle) * orbitalVelocity;
+        h_vy[i] = -cos(angle) * orbitalVelocity;
+        h_vz[i] = 0.0f;
+
     }
 
     queue.enqueueWriteBuffer(buf_x,    CL_TRUE, 0, NUM_BODIES*sizeof(float), h_x.data());
@@ -511,108 +500,107 @@ int main()
     cl::NDRange one(1);
     cl::NDRange localBBox(64);
 
+    std::vector<cl::Memory> shared = { buf_pos_gl };
+    
+    boundingBoxKernel.setArg(0, buf_bbox);
+    boundingBoxKernel.setArg(1, buf_x);
+    boundingBoxKernel.setArg(2, buf_y);
+    boundingBoxKernel.setArg(3, buf_z);
+    
+    initTreeKernel.setArg(0, buf_child);
+    initTreeKernel.setArg(1, buf_nodeX);
+    initTreeKernel.setArg(2, buf_nodeY);
+    initTreeKernel.setArg(3, buf_nodeZ);
+    initTreeKernel.setArg(4, buf_nodeMass);
+    initTreeKernel.setArg(5, buf_nodeCount);
+    initTreeKernel.setArg(6, buf_nodeSize);
+    initTreeKernel.setArg(7, buf_nextNode);
+    initTreeKernel.setArg(8, buf_bbox);
+
+    insertKernel.setArg(0, buf_child);
+    insertKernel.setArg(1, buf_nodeX);
+    insertKernel.setArg(2, buf_nodeY);
+    insertKernel.setArg(3, buf_nodeZ);
+    insertKernel.setArg(4, buf_nodeMass);
+    insertKernel.setArg(5, buf_nodeCount);
+    insertKernel.setArg(6, buf_nodeSize);
+    insertKernel.setArg(7, buf_nextNode);
+    insertKernel.setArg(8, buf_x);
+    insertKernel.setArg(9, buf_y);
+    insertKernel.setArg(10, buf_z);
+    insertKernel.setArg(11, buf_mass);
+
+    comKernel.setArg(0, buf_child);
+    comKernel.setArg(1, buf_nodeX);
+    comKernel.setArg(2, buf_nodeY);
+    comKernel.setArg(3, buf_nodeZ);
+    comKernel.setArg(4, buf_nodeMass);
+    comKernel.setArg(5, buf_nodeCount);
+    comKernel.setArg(6, buf_x);
+    comKernel.setArg(7, buf_y);
+    comKernel.setArg(8, buf_z);
+    comKernel.setArg(9, buf_mass);
+    comKernel.setArg(10, buf_nextNode);
+    comKernel.setArg(11, 0); 
+    comKernel.setArg(12, MAX_NODE);
+
+    forceKernel.setArg(0, buf_child);
+    forceKernel.setArg(1, buf_nodeX);
+    forceKernel.setArg(2, buf_nodeY);
+    forceKernel.setArg(3, buf_nodeZ);
+    forceKernel.setArg(4, buf_nodeMass);
+    forceKernel.setArg(5, buf_nodeSize);
+    forceKernel.setArg(6, buf_nextNode);
+    forceKernel.setArg(7, buf_x);
+    forceKernel.setArg(8, buf_y);
+    forceKernel.setArg(9, buf_z);
+    forceKernel.setArg(10, buf_fx);
+    forceKernel.setArg(11, buf_fy);
+    forceKernel.setArg(12, buf_fz);
+    forceKernel.setArg(13, buf_mass);
+    
+    integKernel.setArg(0, buf_x);
+    integKernel.setArg(1, buf_y);
+    integKernel.setArg(2, buf_z);
+    integKernel.setArg(3, buf_vx);
+    integKernel.setArg(4, buf_vy);
+    integKernel.setArg(5, buf_vz);
+    integKernel.setArg(6, buf_fx);
+    integKernel.setArg(7, buf_fy);
+    integKernel.setArg(8, buf_fz);
+    integKernel.setArg(9, buf_mass);
+    
+    writePositionsKernel.setArg(0, buf_x);
+    writePositionsKernel.setArg(1, buf_y);
+    writePositionsKernel.setArg(2, buf_z);
+    writePositionsKernel.setArg(3, buf_pos_gl);
+
+
     auto simulateStep = [&]()
     {
-        // 2. Bounding box
-        boundingBoxKernel.setArg(0, buf_bbox);
-        boundingBoxKernel.setArg(1, buf_x);
-        boundingBoxKernel.setArg(2, buf_y);
-        boundingBoxKernel.setArg(3, buf_z);
-        queue.enqueueNDRangeKernel(boundingBoxKernel, cl::NullRange, global, localBBox);
-        //queue.finish();
+        try {
+            queue.enqueueNDRangeKernel(boundingBoxKernel, cl::NullRange, global, localBBox);
+            queue.enqueueNDRangeKernel(initTreeKernel, cl::NullRange, globalTree, local);
+            queue.enqueueNDRangeKernel(insertKernel, cl::NullRange, global, local);
 
-        // 3. Init tree
-        initTreeKernel.setArg(0, buf_child);
-        initTreeKernel.setArg(1, buf_nodeX);
-        initTreeKernel.setArg(2, buf_nodeY);
-        initTreeKernel.setArg(3, buf_nodeZ);
-        initTreeKernel.setArg(4, buf_nodeMass);
-        initTreeKernel.setArg(5, buf_nodeCount);
-        initTreeKernel.setArg(6, buf_nodeSize);
-        initTreeKernel.setArg(7, buf_nextNode);
-        initTreeKernel.setArg(8, buf_bbox);
-        queue.enqueueNDRangeKernel(initTreeKernel, cl::NullRange, globalTree, local);
-        //queue.finish();
+            for (int pass = 0; pass < 8; pass++)
+            {
+                queue.enqueueNDRangeKernel(comKernel, cl::NullRange, globalTree, local);
+            }
 
-        // 4. Insert
-        insertKernel.setArg(0, buf_child);
-        insertKernel.setArg(1, buf_nodeX);
-        insertKernel.setArg(2, buf_nodeY);
-        insertKernel.setArg(3, buf_nodeZ);
-        insertKernel.setArg(4, buf_nodeMass);
-        insertKernel.setArg(5, buf_nodeCount);
-        insertKernel.setArg(6, buf_nodeSize);
-        insertKernel.setArg(7, buf_nextNode);
-        insertKernel.setArg(8, buf_x);
-        insertKernel.setArg(9, buf_y);
-        insertKernel.setArg(10, buf_z);
-        insertKernel.setArg(11, buf_mass);
-        queue.enqueueNDRangeKernel(insertKernel, cl::NullRange, global, local);
-        //queue.finish();
+            queue.enqueueNDRangeKernel(forceKernel, cl::NullRange, global, local);
+            queue.enqueueNDRangeKernel(integKernel, cl::NullRange, global, local);
 
-        // 5. COM
-        comKernel.setArg(0, buf_child);
-        comKernel.setArg(1, buf_nodeX);
-        comKernel.setArg(2, buf_nodeY);
-        comKernel.setArg(3, buf_nodeZ);
-        comKernel.setArg(4, buf_nodeMass);
-        comKernel.setArg(5, buf_nodeCount);
-        comKernel.setArg(6, buf_x);
-        comKernel.setArg(7, buf_y);
-        comKernel.setArg(8, buf_z);
-        comKernel.setArg(9, buf_mass);
-        comKernel.setArg(10, buf_nextNode);
-        comKernel.setArg(11, MAX_NODE);
-        comKernel.setArg(12, 0); 
-        queue.enqueueNDRangeKernel(comKernel, cl::NullRange, global, local);
-        //queue.finish();
-            
-        // 6. Forces
-        forceKernel.setArg(0, buf_child);
-        forceKernel.setArg(1, buf_nodeX);
-        forceKernel.setArg(2, buf_nodeY);
-        forceKernel.setArg(3, buf_nodeZ);
-        forceKernel.setArg(4, buf_nodeMass);
-        forceKernel.setArg(5, buf_nodeSize);
-        forceKernel.setArg(6, buf_nextNode);
-        forceKernel.setArg(7, buf_x);
-        forceKernel.setArg(8, buf_y);
-        forceKernel.setArg(9, buf_z);
-        forceKernel.setArg(10, buf_fx);
-        forceKernel.setArg(11, buf_fy);
-        forceKernel.setArg(12, buf_fz);
-        forceKernel.setArg(13, buf_mass);
-        queue.enqueueNDRangeKernel(forceKernel, cl::NullRange, global, local);
-        //queue.finish();
+            queue.enqueueAcquireGLObjects(&shared);
+            queue.enqueueNDRangeKernel(writePositionsKernel, cl::NullRange, global, local);
+            queue.enqueueReleaseGLObjects(&shared);
 
-        // 7. Integration
-        integKernel.setArg(0, buf_x);
-        integKernel.setArg(1, buf_y);
-        integKernel.setArg(2, buf_z);
-        integKernel.setArg(3, buf_vx);
-        integKernel.setArg(4, buf_vy);
-        integKernel.setArg(5, buf_vz);
-        integKernel.setArg(6, buf_fx);
-        integKernel.setArg(7, buf_fy);
-        integKernel.setArg(8, buf_fz);
-        integKernel.setArg(9, buf_mass);
-        queue.enqueueNDRangeKernel(integKernel, cl::NullRange, global, local);
-        //queue.finish();
-
-        // 8. Write positions to shared VBO
-        std::vector<cl::Memory> shared = { buf_pos_gl };
-        queue.enqueueAcquireGLObjects(&shared);
-
-        writePositionsKernel.setArg(0, buf_x);
-        writePositionsKernel.setArg(1, buf_y);
-        writePositionsKernel.setArg(2, buf_z);
-        writePositionsKernel.setArg(3, buf_pos_gl);
-        queue.enqueueNDRangeKernel(writePositionsKernel, cl::NullRange, global, local);
-        queue.enqueueReleaseGLObjects(&shared);
-
-        queue.flush();
-
-
+            queue.finish();
+        }
+        catch (cl::Error& e) {
+            std::cerr << "OpenCL error: " << e.what() << " (" << e.err() << ")\n";
+            exit(1);
+        }
     };
 
     sim.loop(simulateStep);
