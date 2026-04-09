@@ -48,24 +48,13 @@ __kernel void boundingBoxKernel(
     int tid = get_local_id(0);
     int gid = get_global_id(0);
 
-    if (gid < NUM_BODIES)
-    {
-        sMinX[tid] = buf_x[gid];
-        sMaxX[tid] = buf_x[gid];
-        sMinY[tid] = buf_y[gid];
-        sMaxY[tid] = buf_y[gid];
-        sMinZ[tid] = buf_z[gid];
-        sMaxZ[tid] = buf_z[gid];
-    }
-    else
-    {
-        sMinX[tid] =  1e30f;
-        sMaxX[tid] = -1e30f;
-        sMinY[tid] =  1e30f;
-        sMaxY[tid] = -1e30f;
-        sMinZ[tid] =  1e30f;
-        sMaxZ[tid] = -1e30f;
-    }
+    sMinX[tid] = buf_x[gid];
+    sMaxX[tid] = buf_x[gid];
+    sMinY[tid] = buf_y[gid];
+    sMaxY[tid] = buf_y[gid];
+    sMinZ[tid] = buf_z[gid];
+    sMaxZ[tid] = buf_z[gid];
+    
     barrier(CLK_LOCAL_MEM_FENCE);
 
     for (int stride = get_local_size(0) / 2; stride > 0; stride >>= 1)
@@ -105,7 +94,9 @@ __kernel void initTreeKernel(
     if (gid < MAX_NODE)
     {
         for (int i = 0; i < 8; i++)
+        {
             child[gid * 8 + i] = EMPTY;
+        }
 
         nodeX[gid] = nodeY[gid] = nodeZ[gid] = 0.0f;
         nodeMass[gid]  = 0.0f;
@@ -128,6 +119,7 @@ __kernel void initTreeKernel(
 
         nextNode[0] = 1;
     }
+
 }
 
 __kernel void insertBodiesKernel(
@@ -167,7 +159,11 @@ __kernel void insertBodiesKernel(
             volatile __global int* slot = (volatile __global int*)&child[node * 8 + oct];
             int c = *slot;
 
-            if (c == LOCKED) { restart = true; break; }
+            if (c == LOCKED) 
+            { 
+                restart = true; 
+                break;
+            }
 
             if (c == EMPTY)
             {
@@ -183,7 +179,9 @@ __kernel void insertBodiesKernel(
             }
 
             if (atomic_cmpxchg(slot, c, -2) != c)
+            {
                 continue;
+            }
 
             int newNode = atomic_add((volatile __global int*)nextNode, 1);
             if (newNode >= MAX_NODE)
@@ -206,7 +204,9 @@ __kernel void insertBodiesKernel(
             nodeCount[newNode] = 0;
 
             for (int i = 0; i < 8; i++)
+            {
                 child[newNode * 8 + i] = EMPTY;
+            }
 
             float ex = x[c], ey = y[c], ez = z[c];
             int existOct = 0;
@@ -277,15 +277,68 @@ __kernel void computeCOMKernel(
     }
 }
 
-__kernel void forceKernel(
+__kernel void sortKernel(
+    __global int*   child,
+    __global int*   nodeCount,
+    __global int*   startIndex,  // prefix sum output position for each node
+    __global float* x,  __global float* y,  __global float* z,
+    __global float* vx, __global float* vy, __global float* vz,
+    __global float* mass,
+    __global float* sorted_x,  __global float* sorted_y,  __global float* sorted_z,
+    __global float* sorted_vx, __global float* sorted_vy, __global float* sorted_vz,
+    __global float* sorted_mass,
+    __global int*   nextNode)
+{
+    // Stack-based top-down traversal
+    int stack[64];
+    int posStack[64];
+    int top = 0;
+    stack[top] = 0;
+    posStack[top] = 0;
+    top++;
+
+    if (get_global_id(0) != 0) return; // single-thread version first
+
+    while (top > 0) {
+        top--;
+        int node = stack[top];
+        int pos  = posStack[top];
+
+        for (int i = 0; i < 8; i++) {
+            int c = child[node * 8 + i];
+            if (c == EMPTY) continue;
+
+            if (c < NUM_BODIES) {
+                // leaf body — place it at 'pos'
+                sorted_x[pos]    = x[c];
+                sorted_y[pos]    = y[c];
+                sorted_z[pos]    = z[c];
+                sorted_vx[pos]   = vx[c];
+                sorted_vy[pos]   = vy[c];
+                sorted_vz[pos]   = vz[c];
+                sorted_mass[pos] = mass[c];
+                pos++;
+            } else {
+                int cn = c - NUM_BODIES;
+                stack[top]    = cn;
+                posStack[top] = pos;
+                top++;
+                pos += nodeCount[cn];
+            }
+        }
+    }
+}
+
+__kernel void forceAndIntegrationKernel(
     __global int*   child,
     __global float* nodeX,    __global float* nodeY,    __global float* nodeZ,
     __global float* nodeMass, __global float* nodeSize,
     __global int*   nextNode,
     __global float* x,  __global float* y,  __global float* z,
-    __global float* fx, __global float* fy, __global float* fz,
+    __global float* vx, __global float* vy, __global float* vz,
     __global float* mass)
 {
+       
     int bodyIdx = get_global_id(0);
     if (bodyIdx >= NUM_BODIES) return;
 
@@ -296,7 +349,7 @@ __kernel void forceKernel(
 
     float ax = 0.0f, ay = 0.0f, az = 0.0f;
 
-    int stack[64];
+    int stack[128];
     int stackTop = 0;
     stack[stackTop++] = 0; 
     float force = 0.0f;
@@ -341,7 +394,7 @@ __kernel void forceKernel(
                     ay += force * (dy / dist);
                     az += force * (dz / dist);
                 }
-                else if (stackTop < 64)
+                else if (stackTop < 127)
                 {
                     stack[stackTop++] = childNode;
                 }
@@ -349,34 +402,13 @@ __kernel void forceKernel(
         }
     }
 
-    fx[bodyIdx] = ax;
-    fy[bodyIdx] = ay;
-    fz[bodyIdx] = az;
-}
-
-
-__kernel void integrationKernel(
-    __global float* x,  __global float* y,  __global float* z,
-    __global float* vx, __global float* vy, __global float* vz,
-    __global float* fx, __global float* fy, __global float* fz,
-    __global float* mass)
-{
-    int i = get_global_id(0);
-    if (i >= NUM_BODIES) return;
-
-    float inv_mass = 1.0f / mass[i];
-
-    float ax = fx[i] * inv_mass;
-    float ay = fy[i] * inv_mass;
-    float az = fz[i] * inv_mass;
-
-    vx[i] += ax * DT;
-    vy[i] += ay * DT;
-    vz[i] += az * DT;
-
-    x[i] += vx[i] * DT;
-    y[i] += vy[i] * DT;
-    z[i] += vz[i] * DT;
+    float inv_m = 1.0f / bm;
+    vx[bodyIdx] += ax * inv_m * DT;
+    vy[bodyIdx] += ay * inv_m * DT;
+    vz[bodyIdx] += az * inv_m * DT;
+    x[bodyIdx]  += vx[bodyIdx] * DT;
+    y[bodyIdx]  += vy[bodyIdx] * DT;
+    z[bodyIdx]  += vz[bodyIdx] * DT;
 }
 
 __kernel void writePositionsInterleaved(

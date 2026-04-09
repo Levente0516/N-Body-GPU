@@ -31,6 +31,7 @@
 #include <CL/cl_gl.h>
 #include <wingdi.h>
 
+int         current  = 0;
 
 // ─── OpenGL shader helpers ────────────────────────────────────────────────────
 
@@ -87,7 +88,7 @@ public:
     float camPitch       = glm::radians(65.0f);
 
     GLFWwindow* window   = nullptr;
-    GLuint      vbo      = 0;
+    GLuint      vbo[2];
     GLuint      vao      = 0;
     GLuint      program  = 0;
 
@@ -108,7 +109,7 @@ public:
         cleanup();
     }
 
-    GLuint getVBO() { return vbo; }
+    GLuint getVBO(int i) { return vbo[i]; }
 
 private:
     void initWindow()
@@ -221,17 +222,27 @@ private:
 
     void initGL()
     {
-        // Create VBO — OpenCL will write into this
-        glGenBuffers(1, &vbo);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 3 * NUM_BODIES, nullptr, GL_DYNAMIC_DRAW);
+        glGenBuffers(2, vbo);
+
+        for (int i = 0; i < 2; i++)
+        {
+            glBindBuffer(GL_ARRAY_BUFFER, vbo[i]);
+            glBufferData(GL_ARRAY_BUFFER,
+                sizeof(float) * 3 * NUM_BODIES,
+                nullptr,
+                GL_STREAM_DRAW);
+        }
 
         // VAO
         glGenVertexArrays(1, &vao);
         glBindVertexArray(vao);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+
+        // bind first buffer just to define layout
+        glBindBuffer(GL_ARRAY_BUFFER, vbo[0]);
+
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float)*3, (void*)0);
         glEnableVertexAttribArray(0);
+
         glBindVertexArray(0);
 
         // Shaders
@@ -241,9 +252,8 @@ private:
         
         glEnable(GL_PROGRAM_POINT_SIZE);
         glEnable(GL_BLEND);
+        glDisable(GL_DEPTH_TEST);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-        glEnable(GL_DEPTH_TEST);
-        glBlendFunc(GL_ONE, GL_ONE);
 
         std::cout << "OpenGL initialized" << std::endl;
         std::cout << "Renderer: " << glGetString(GL_RENDERER) << std::endl;
@@ -262,7 +272,7 @@ private:
         glm::mat4 projection = glm::perspective(
             glm::radians(45.0f),  // Field of view
             aspect,
-            1000.0f,              // Near plane (increase this)
+            100.0f,              // Near plane (increase this)
             SPAWN_RANGE * 100.0f   // Far plane
         );
 
@@ -290,8 +300,13 @@ private:
             1, GL_FALSE, glm::value_ptr(view)
         );
 
+        int drawBuf = 1 - current;
+
         glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo[drawBuf]);
+
         glDrawArrays(GL_POINTS, 0, NUM_BODIES);
+
         glBindVertexArray(0);
 
         glfwSwapBuffers(window);
@@ -300,7 +315,8 @@ private:
 
     void cleanup()
     {
-        glDeleteBuffers(1, &vbo);
+        glDeleteBuffers(1, &vbo[0]);
+        glDeleteBuffers(1, &vbo[1]);
         glDeleteVertexArrays(1, &vao);
         glDeleteProgram(program);
         glfwDestroyWindow(window);
@@ -372,13 +388,12 @@ int main()
         return 1;
     }
 
-    cl::Kernel boundingBoxKernel  (program, "boundingBoxKernel");
-    cl::Kernel initTreeKernel     (program, "initTreeKernel");
-    cl::Kernel insertKernel       (program, "insertBodiesKernel");
-    cl::Kernel comKernel          (program, "computeCOMKernel");
-    cl::Kernel forceKernel        (program, "forceKernel");
-    cl::Kernel integKernel        (program, "integrationKernel");
-    cl::Kernel writePositionsKernel(program, "writePositionsInterleaved");
+    cl::Kernel boundingBoxKernel    (program, "boundingBoxKernel");
+    cl::Kernel initTreeKernel       (program, "initTreeKernel");
+    cl::Kernel insertKernel         (program, "insertBodiesKernel");
+    cl::Kernel comKernel            (program, "computeCOMKernel");
+    cl::Kernel forceAndIntKernel    (program, "forceAndIntegrationKernel");
+    cl::Kernel writePositionsKernel (program, "writePositionsInterleaved");
 
     // ── OpenCL buffers ──────────────────────────────────────────────────────
     cl::Buffer buf_x    (context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
@@ -403,7 +418,7 @@ int main()
     cl::Buffer buf_flag     (context, CL_MEM_READ_WRITE, sizeof(int));
 
     // ── Shared VBO buffer ───────────────────────────────────────────────────
-    cl::BufferGL buf_pos_gl;
+    cl::BufferGL buf_pos_gl[2];
     cl::Buffer   buf_pos_fallback;
     bool usingGLSharing = false;
 
@@ -411,7 +426,10 @@ int main()
     {
         try
         {
-            buf_pos_gl   = cl::BufferGL(context, CL_MEM_READ_WRITE, sim.getVBO());
+            for (int i = 0; i < 2; i++)
+            {
+                buf_pos_gl[i] = cl::BufferGL(context, CL_MEM_READ_WRITE, sim.getVBO(i));
+            }
             usingGLSharing = true;
             std::cout << "Shared OpenCL-OpenGL VBO created — true GPU interop active" << std::endl;
         }
@@ -434,26 +452,26 @@ int main()
     std::vector<float> h_mass(NUM_BODIES);
     
     //Optional blackhole xd
-    /*
+    
     h_x[0] = 0;
     h_y[0] = 0;
     h_z[0] = 0;
-    h_mass[0] = 2000000.0f;
+    h_mass[0] = 200000000.0f;
     h_vx[0] = 0.0f;
     h_vy[0] = 0.0f;
     h_vz[0] = 0.0f; 
-    */
+    
 
     float totalSystemMass = 0.00f;
 
-    for (int i = 0; i < NUM_BODIES; i++)
+    for (int i = 1; i < NUM_BODIES; i++)
     {
         float massFactor = pow(((float)rand() / RAND_MAX), 2.0f);
         h_mass[i] = 5000.0f + massFactor * 50000.0f;
         totalSystemMass += h_mass[i];
     }
 
-    for (int i = 0; i < NUM_BODIES; i++)
+    for (int i = 1; i < NUM_BODIES; i++)
     {
         float angle = ((float)rand() / RAND_MAX) * 2.0f * 3.14159f;
         float radius = 0.0f;
@@ -497,10 +515,8 @@ int main()
     cl::NDRange global(NUM_BODIES);
     cl::NDRange local(THREADS);
     cl::NDRange globalTree(MAX_NODE);
-    cl::NDRange one(1);
+    // cl::NDRange one(1);
     cl::NDRange localBBox(64);
-
-    std::vector<cl::Memory> shared = { buf_pos_gl };
     
     boundingBoxKernel.setArg(0, buf_bbox);
     boundingBoxKernel.setArg(1, buf_x);
@@ -544,58 +560,58 @@ int main()
     comKernel.setArg(11, 0); 
     comKernel.setArg(12, MAX_NODE);
 
-    forceKernel.setArg(0, buf_child);
-    forceKernel.setArg(1, buf_nodeX);
-    forceKernel.setArg(2, buf_nodeY);
-    forceKernel.setArg(3, buf_nodeZ);
-    forceKernel.setArg(4, buf_nodeMass);
-    forceKernel.setArg(5, buf_nodeSize);
-    forceKernel.setArg(6, buf_nextNode);
-    forceKernel.setArg(7, buf_x);
-    forceKernel.setArg(8, buf_y);
-    forceKernel.setArg(9, buf_z);
-    forceKernel.setArg(10, buf_fx);
-    forceKernel.setArg(11, buf_fy);
-    forceKernel.setArg(12, buf_fz);
-    forceKernel.setArg(13, buf_mass);
-    
-    integKernel.setArg(0, buf_x);
-    integKernel.setArg(1, buf_y);
-    integKernel.setArg(2, buf_z);
-    integKernel.setArg(3, buf_vx);
-    integKernel.setArg(4, buf_vy);
-    integKernel.setArg(5, buf_vz);
-    integKernel.setArg(6, buf_fx);
-    integKernel.setArg(7, buf_fy);
-    integKernel.setArg(8, buf_fz);
-    integKernel.setArg(9, buf_mass);
+    forceAndIntKernel .setArg(0, buf_child);
+    forceAndIntKernel .setArg(1, buf_nodeX);
+    forceAndIntKernel .setArg(2, buf_nodeY);
+    forceAndIntKernel .setArg(3, buf_nodeZ);
+    forceAndIntKernel .setArg(4, buf_nodeMass);
+    forceAndIntKernel .setArg(5, buf_nodeSize);
+    forceAndIntKernel .setArg(6, buf_nextNode);
+    forceAndIntKernel .setArg(7, buf_x);
+    forceAndIntKernel .setArg(8, buf_y);
+    forceAndIntKernel .setArg(9, buf_z);
+    forceAndIntKernel .setArg(10, buf_vx);
+    forceAndIntKernel .setArg(11, buf_vy);
+    forceAndIntKernel .setArg(12, buf_vz);
+    forceAndIntKernel .setArg(13, buf_mass);
     
     writePositionsKernel.setArg(0, buf_x);
     writePositionsKernel.setArg(1, buf_y);
     writePositionsKernel.setArg(2, buf_z);
-    writePositionsKernel.setArg(3, buf_pos_gl);
+    //writePositionsKernel.setArg(3, buf_pos_gl);
 
 
     auto simulateStep = [&]()
     {
         try {
+
+            int writeBuf = current;
+            int readBuf  = 1 - current;
+
+            std::vector<cl::Memory> shared = { buf_pos_gl[writeBuf] };
+
+            writePositionsKernel.setArg(3, buf_pos_gl[writeBuf]);
+
+
             queue.enqueueNDRangeKernel(boundingBoxKernel, cl::NullRange, global, localBBox);
             queue.enqueueNDRangeKernel(initTreeKernel, cl::NullRange, globalTree, local);
             queue.enqueueNDRangeKernel(insertKernel, cl::NullRange, global, local);
 
-            for (int pass = 0; pass < 8; pass++)
+            for (int pass = 0; pass < 6; pass++)
             {
                 queue.enqueueNDRangeKernel(comKernel, cl::NullRange, globalTree, local);
             }
 
-            queue.enqueueNDRangeKernel(forceKernel, cl::NullRange, global, local);
-            queue.enqueueNDRangeKernel(integKernel, cl::NullRange, global, local);
+            queue.enqueueNDRangeKernel(forceAndIntKernel , cl::NullRange, global, local);
 
+            //glFinish();
             queue.enqueueAcquireGLObjects(&shared);
             queue.enqueueNDRangeKernel(writePositionsKernel, cl::NullRange, global, local);
             queue.enqueueReleaseGLObjects(&shared);
 
-            queue.finish();
+            queue.flush();
+
+            current = 1 - current;
         }
         catch (cl::Error& e) {
             std::cerr << "OpenCL error: " << e.what() << " (" << e.err() << ")\n";
