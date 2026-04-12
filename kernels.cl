@@ -35,16 +35,6 @@ __kernel void boundingBoxKernel(
     __local float sMinZ[THREADS];
     __local float sMaxZ[THREADS];
 
-    if (get_global_id(0) == 0)
-    {
-        bbox[0] =  1e30f;
-        bbox[1] = -1e30f;
-        bbox[2] =  1e30f;
-        bbox[3] = -1e30f;
-        bbox[4] =  1e30f;
-        bbox[5] = -1e30f;
-    }
-
     int tid = get_local_id(0);
     int gid = get_global_id(0);
 
@@ -82,6 +72,7 @@ __kernel void boundingBoxKernel(
     }
 }
 
+/*
 __kernel void initTreeKernel(
     __global int*   child,
     __global float* nodeX,    __global float* nodeY,    __global float* nodeZ,
@@ -144,7 +135,7 @@ __kernel void insertBodiesKernel(
         int  node    = 0;
         bool restart = false;
 
-        while (!inserted && !restart)
+        while (!restart)
         {
             float cx   = nodeX[node];
             float cy   = nodeY[node];
@@ -171,7 +162,6 @@ __kernel void insertBodiesKernel(
                     inserted = true;
                 continue;
             }
-
             if (c >= NUM_BODIES)
             {
                 node = c - NUM_BODIES;
@@ -186,6 +176,7 @@ __kernel void insertBodiesKernel(
             int newNode = atomic_add((volatile __global int*)nextNode, 1);
             if (newNode >= MAX_NODE)
             {
+                atomic_dec((volatile __global int*)nextNode);
                 *slot = c;
                 inserted = true;
                 break;
@@ -200,7 +191,7 @@ __kernel void insertBodiesKernel(
             nodeY[newNode]     = newCY;
             nodeZ[newNode]     = newCZ;
             nodeSize[newNode]  = halfSize;
-            nodeMass[newNode]  = 0.0f;
+            nodeMass[newNode]  = -1.0f;
             nodeCount[newNode] = 0;
 
             for (int i = 0; i < 8; i++)
@@ -223,110 +214,76 @@ __kernel void insertBodiesKernel(
         }
     }
 }
-
 __kernel void computeCOMKernel(
     __global int*   child,
-    __global float* nodeX,  __global float* nodeY,  __global float* nodeZ,
-    __global float* nodeMass, __global int* nodeCount,
-    __global float* x, __global float* y, __global float* z,
+    __global float* nodeX,    __global float* nodeY,    __global float* nodeZ,
+    __global float* nodeMass, __global int*   nodeCount,
+    __global float* x,        __global float* y,        __global float* z,
     __global float* mass,
     __global int*   nextNode,
     int             startNode,
     int             endNode)
 {
-    int node = startNode + get_global_id(0);
+    int node = get_global_id(0);
     if (node >= endNode) return;
 
-    float totalMass = 0.0f; 
+    float totalMass = 0.0f;
     float cx = 0.0f, cy = 0.0f, cz = 0.0f;
     int   count = 0;
+    bool  ready = false;
 
-    for (int i = 0; i < 8; i++)
+    while (!ready)
     {
-        int c = child[node * 8 + i];
-        if (c == EMPTY) continue;
+        totalMass = 0.0f;
+        cx = 0.0f; cy = 0.0f; cz = 0.0f;
+        count = 0;
+        ready = true;
 
-        if (c < NUM_BODIES)
+        for (int i = 0; i < 8; i++)
         {
-            float m = mass[c];
-            totalMass += m;
-            cx += x[c] * m;
-            cy += y[c] * m;
-            cz += z[c] * m;
-            count++;
-        }
-        else
-        {
-            int childNode = c - NUM_BODIES;
-            float m = nodeMass[childNode];
-            totalMass += m;
-            cx += nodeX[childNode] * m;
-            cy += nodeY[childNode] * m;
-            cz += nodeZ[childNode] * m;
-            count += nodeCount[childNode];
+            int c = child[node * 8 + i];
+            if (c == EMPTY) continue;
+
+            if (c < NUM_BODIES)
+            {
+                float m = mass[c];
+                totalMass += m;
+                cx += x[c] * m;
+                cy += y[c] * m;
+                cz += z[c] * m;
+                count++;
+            }
+            else
+            {
+                int cn = c - NUM_BODIES;
+
+                float m = ((volatile __global float*)nodeMass)[cn];
+
+                if (m < 0.0f)
+                {
+                    ready = false;
+                    break;  // break inner loop, retry outer while
+                }
+
+                totalMass += m;
+                cx += nodeX[cn] * m;
+                cy += nodeY[cn] * m;
+                cz += nodeZ[cn] * m;
+                count += nodeCount[cn];
+            }
         }
     }
 
     if (totalMass > 0.0f)
     {
-        nodeX[node]     = cx / totalMass;
-        nodeY[node]     = cy / totalMass;
-        nodeZ[node]     = cz / totalMass;
-        nodeMass[node]  = totalMass;
-        nodeCount[node] = count;
+        nodeX[node]    = cx / totalMass;
+        nodeY[node]    = cy / totalMass;
+        nodeZ[node]    = cz / totalMass;
+        nodeCount[node]= count;
     }
-}
 
-__kernel void sortKernel(
-    __global int*   child,
-    __global int*   nodeCount,
-    __global int*   startIndex,  // prefix sum output position for each node
-    __global float* x,  __global float* y,  __global float* z,
-    __global float* vx, __global float* vy, __global float* vz,
-    __global float* mass,
-    __global float* sorted_x,  __global float* sorted_y,  __global float* sorted_z,
-    __global float* sorted_vx, __global float* sorted_vy, __global float* sorted_vz,
-    __global float* sorted_mass,
-    __global int*   nextNode)
-{
-    // Stack-based top-down traversal
-    int stack[64];
-    int posStack[64];
-    int top = 0;
-    stack[top] = 0;
-    posStack[top] = 0;
-    top++;
-
-    if (get_global_id(0) != 0) return; // single-thread version first
-
-    while (top > 0) {
-        top--;
-        int node = stack[top];
-        int pos  = posStack[top];
-
-        for (int i = 0; i < 8; i++) {
-            int c = child[node * 8 + i];
-            if (c == EMPTY) continue;
-
-            if (c < NUM_BODIES) {
-                // leaf body — place it at 'pos'
-                sorted_x[pos]    = x[c];
-                sorted_y[pos]    = y[c];
-                sorted_z[pos]    = z[c];
-                sorted_vx[pos]   = vx[c];
-                sorted_vy[pos]   = vy[c];
-                sorted_vz[pos]   = vz[c];
-                sorted_mass[pos] = mass[c];
-                pos++;
-            } else {
-                int cn = c - NUM_BODIES;
-                stack[top]    = cn;
-                posStack[top] = pos;
-                top++;
-                pos += nodeCount[cn];
-            }
-        }
-    }
+    mem_fence(CLK_GLOBAL_MEM_FENCE);
+    nodeMass[node] = (totalMass > 0.0f) ? totalMass : 0.0f;
 }
 
 __kernel void forceAndIntegrationKernel(
@@ -349,10 +306,9 @@ __kernel void forceAndIntegrationKernel(
 
     float ax = 0.0f, ay = 0.0f, az = 0.0f;
 
-    int stack[128];
+    int stack[1024];
     int stackTop = 0;
     stack[stackTop++] = 0; 
-    float force = 0.0f;
 
     while (stackTop > 0)
     {
@@ -372,7 +328,7 @@ __kernel void forceAndIntegrationKernel(
                 dy = y[c] - by;
                 dz = z[c] - bz;
                 dist2 = dx*dx + dy*dy + dz*dz + SOFTENING*SOFTENING;
-                dist  = sqrt(dist2);
+                dist  = native_sqrt(dist2);
                 force = G * bm * mass[c] / dist2;
                 ax += force * (dx / dist);
                 ay += force * (dy / dist);
@@ -385,7 +341,7 @@ __kernel void forceAndIntegrationKernel(
                 dy = nodeY[childNode] - by;
                 dz = nodeZ[childNode] - bz;
                 dist2 = dx*dx + dy*dy + dz*dz + SOFTENING*SOFTENING;
-                dist  = sqrt(dist2);
+                dist  = native_sqrt(dist2);
 
                 if ((nodeSize[childNode] / dist) < THETA)
                 {
@@ -394,7 +350,7 @@ __kernel void forceAndIntegrationKernel(
                     ay += force * (dy / dist);
                     az += force * (dz / dist);
                 }
-                else if (stackTop < 127)
+                else if (stackTop < 511)
                 {
                     stack[stackTop++] = childNode;
                 }
@@ -410,9 +366,85 @@ __kernel void forceAndIntegrationKernel(
     y[bodyIdx]  += vy[bodyIdx] * DT;
     z[bodyIdx]  += vz[bodyIdx] * DT;
 }
+*/
+
+__kernel void forceAndIntegrationKernel(
+    __global const float* nodeCOMX,
+    __global const float* nodeCOMY,
+    __global const float* nodeMass,
+    __global const float* nodeHalfSize,
+    __global const int*   nodeChildren, 
+    __global const int*   nodeBodyIdx,   
+    __global       float* x,
+    __global       float* y,
+    __global       float* vx,
+    __global       float* vy,
+    __global const float* mass,
+    int numNodes)
+{
+    int i = get_global_id(0);
+    if (i >= NUM_BODIES) return;
+
+    float bx = x[i];
+    float by = y[i];
+    float ax = 0.0f, ay = 0.0f;
+
+    int stack[256];
+    int top = 0;
+    if (numNodes > 0) stack[top++] = 0;
+
+    while (top > 0)
+    {
+        int node = stack[--top];
+        int bodyJ = nodeBodyIdx[node];
+
+        if (bodyJ >= 0)
+        {
+            if (bodyJ == i) continue;
+
+            float dx    = x[bodyJ] - bx;
+            float dy    = y[bodyJ] - by;
+            float dist2 = dx*dx + dy*dy + SOFTENING*SOFTENING;
+            float invD  = native_rsqrt(dist2);
+            float invD3 = invD * invD * invD;
+            ax += G * nodeMass[node] * dx * invD3;
+            ay += G * nodeMass[node] * dy * invD3;
+        }
+        else
+        {
+            float dx    = nodeCOMX[node] - bx;
+            float dy    = nodeCOMY[node] - by;
+            float dist2 = dx*dx + dy*dy + SOFTENING*SOFTENING;
+            float dist  = native_sqrt(dist2);
+            float s     = nodeHalfSize[node] * 2.0f;
+
+            if (s < THETA * dist)
+            {
+                float invD  = native_rsqrt(dist2);
+                float invD3 = invD * invD * invD;
+                ax += G * nodeMass[node] * dx * invD3;
+                ay += G * nodeMass[node] * dy * invD3;
+            }
+            else
+            {
+                for (int c = 0; c < 4; c++)
+                {
+                    int child = nodeChildren[node * 4 + c];
+                    if (child >= 0 && top < 255)
+                        stack[top++] = child;
+                }
+            }
+        }
+    }
+
+    vx[i] += ax * DT;
+    vy[i] += ay * DT;
+    x[i]  += vx[i] * DT;
+    y[i]  += vy[i] * DT;
+}
 
 __kernel void writePositionsInterleaved(
-    __global float* x, __global float* y, __global float* z,
+    __global float* x, __global float* y,
     __global float* out)
 {
     int i = get_global_id(0);
@@ -420,5 +452,5 @@ __kernel void writePositionsInterleaved(
 
     out[i * 3 + 0] = x[i];
     out[i * 3 + 1] = y[i];
-    out[i * 3 + 2] = z[i];
+    out[i * 3 + 2] = 0.0f;
 }
