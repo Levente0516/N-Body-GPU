@@ -1,5 +1,6 @@
 #pragma OPENCL EXTENSION cl_khr_global_int32_base_atomics : enable
 #pragma OPENCL EXTENSION cl_khr_local_int32_base_atomics  : enable
+#pragma OPENCL EXTENSION cl_khr_int64_base_atomics : enable
 
 
 void atomicMinFloat(__global float* addr, float val)
@@ -368,71 +369,290 @@ __kernel void forceAndIntegrationKernel(
 }
 */
 
+int deltaFn(__global const uint* codes, int i, int j, int N)
+{
+    if (j < 0 || j >= N) return -1;
+    uint ci = codes[i], cj = codes[j];
+    if (ci == cj) return 32 + clz((uint)(i ^ j));
+    return clz(ci ^ cj);
+}
+
+__kernel void initTreeKernel(
+    __global int*   nodeAtomic,
+    __global int*   parent,
+    __global int*   leftChild,
+    __global int*   rightChild,
+    __global float* nodeMass
+    )
+{
+    int i = get_global_id(0);
+    if (i >= MAX_NODE) return;
+    nodeAtomic[i] = 0;
+    parent[i]     = -1;
+    leftChild[i]  = -1;
+    rightChild[i] = -1;
+    nodeMass[i]   = -1.0f; 
+}
+
+__kernel void buildTreeKernel(
+    __global const uint* sortedCodes,
+    __global       int*  leftChild,
+    __global       int*  rightChild,
+    __global       int*  parent)
+{
+    int i = get_global_id(0);
+    if (i >= NUM_BODIES - 1) return;
+
+    int myNode = NUM_BODIES + i;   // this thread owns internal node N+i
+
+    // ── Step 1: determine direction d of this node's range ────────────────
+    int dprev = deltaFn(sortedCodes, i, i - 1, NUM_BODIES);
+    int dnext = deltaFn(sortedCodes, i, i + 1, NUM_BODIES);
+    int d = (dnext >= dprev) ? 1 : -1;
+
+
+    // ── Step 2: find the length of the range in direction d ───────────────
+    int dmin = deltaFn(sortedCodes, i, i - d, NUM_BODIES);
+
+
+    int lmax = 2;
+    while (deltaFn(sortedCodes, i, i + lmax * d, NUM_BODIES) > dmin)
+    {
+        lmax <<= 1;   // bounded: at most log2(N) iterations
+    }
+
+    int l = 0;
+    for (int t = lmax >> 1; t >= 1; t >>= 1)
+    {
+        if (deltaFn(sortedCodes, i, i + (l + t) * d, NUM_BODIES) > dmin)
+        {
+            l += t;
+        }
+    }
+
+    int j     = i + l * d;          // other end of range
+    int imin  = min(i, j);
+    int imax  = max(i, j);
+    int range = imax - imin;        // always positive
+
+    // ── Step 3: find split position γ inside [imin, imax] ─────────────────
+    int dnode = deltaFn(sortedCodes, i, j, NUM_BODIES);
+    int s = 0;
+    for (int t = (range + 1) >> 1; t >= 1; t >>= 1)
+    {
+        if (deltaFn(sortedCodes, i, i + (s + t) * d, NUM_BODIES) > dnode)
+        {
+            s += t;
+        }
+    }
+
+    int gamma = i + s * d + min(d, 0);   // split: left=[imin,gamma], right=[gamma+1,imax]
+
+
+    // ── Step 4: wire up children ──────────────────────────────────────────
+    // If a side of the split has exactly one leaf, it IS that leaf (index 0..N-1).
+    // Otherwise it is an internal node (N + its left boundary).
+    int lc = (imin     == gamma    ) ? gamma     : (NUM_BODIES + imin);
+    int rc = (gamma + 1 == imax    ) ? (gamma+1) : (NUM_BODIES + gamma + 1);
+
+    leftChild[myNode]  = lc;
+    rightChild[myNode] = rc;
+
+    // No race: each node (lc, rc) is the child of exactly one internal node.
+    parent[lc] = myNode;
+    parent[rc] = myNode;
+}
+
+__kernel void computeCOMKernel(
+    __global const int*   sortedBodies,
+    __global const float* bx,
+    __global const float* by,
+    __global const float* bmass,
+    __global       float* nodeCOMX,
+    __global       float* nodeCOMY,
+    __global       float* nodeMass,
+    __global       float* nodeMinX,
+    __global       float* nodeMinY,
+    __global       float* nodeMaxX,
+    __global       float* nodeMaxY,
+    __global const int*   leftChild,
+    __global const int*   rightChild,
+    __global const int*   parent,
+    __global       int*   nodeAtomic)
+{
+    int k = get_global_id(0);
+    if (k >= NUM_BODIES) return;
+
+    int   b  = sortedBodies[k];
+    float px = bx[b], py = by[b], m = bmass[b];
+
+    nodeCOMX[k] = px;
+    nodeCOMY[k] = py;
+    nodeMinX[k] = nodeMaxX[k] = px;
+    nodeMinY[k] = nodeMaxY[k] = py;
+
+    // Write mass LAST with release — this is the flag siblings spin on
+    atomic_store_explicit(
+        (__global atomic_int*)(nodeMass + k),
+        as_int(m),
+        memory_order_release,
+        memory_scope_device);
+
+    int node = parent[k];
+    while (node >= 0)
+    {
+        int prev = atomic_fetch_add_explicit(
+            (__global atomic_int*)&nodeAtomic[node],
+            1,
+            memory_order_acq_rel,
+            memory_scope_device);
+
+        if (prev == 0) return;  // first to arrive — stop
+
+        int lc = leftChild[node];
+        int rc = rightChild[node];
+
+        if (lc < 0 || rc < 0) return;
+
+        // Spin with acquire — guaranteed to see the release write
+        int raw_lm, raw_rm;
+        do {
+            raw_lm = atomic_load_explicit(
+                (__global atomic_int*)(nodeMass + lc),
+                memory_order_acquire,
+                memory_scope_device);
+        } while (as_float(raw_lm) < 0.0f);
+
+        do {
+            raw_rm = atomic_load_explicit(
+                (__global atomic_int*)(nodeMass + rc),
+                memory_order_acquire,
+                memory_scope_device);
+        } while (as_float(raw_rm) < 0.0f);
+
+        float lm = as_float(raw_lm);
+        float rm = as_float(raw_rm);
+        float tm = lm + rm;
+
+        if (tm > 0.0f) {
+            nodeCOMX[node] = (nodeCOMX[lc]*lm + nodeCOMX[rc]*rm) / tm;
+            nodeCOMY[node] = (nodeCOMY[lc]*lm + nodeCOMY[rc]*rm) / tm;
+        } else {
+            nodeCOMX[node] = (nodeMinX[lc] + nodeMaxX[lc]) * 0.5f;
+            nodeCOMY[node] = (nodeMinY[lc] + nodeMaxY[lc]) * 0.5f;
+        }
+        nodeMinX[node] = fmin(nodeMinX[lc], nodeMinX[rc]);
+        nodeMaxX[node] = fmax(nodeMaxX[lc], nodeMaxX[rc]);
+        nodeMinY[node] = fmin(nodeMinY[lc], nodeMinY[rc]);
+        nodeMaxY[node] = fmax(nodeMaxY[lc], nodeMaxY[rc]);
+
+        // Write mass LAST with release
+        atomic_store_explicit(
+            (__global atomic_int*)(nodeMass + node),
+            as_int(tm),
+            memory_order_release,
+            memory_scope_device);
+
+        node = parent[node];
+    }
+}
+
+
 __kernel void forceAndIntegrationKernel(
     __global const float* nodeCOMX,
     __global const float* nodeCOMY,
     __global const float* nodeMass,
-    __global const float* nodeHalfSize,
-    __global const int*   nodeChildren, 
-    __global const int*   nodeBodyIdx,   
+    __global const float* nodeMinX,
+    __global const float* nodeMinY,
+    __global const float* nodeMaxX,
+    __global const float* nodeMaxY,
+    __global const int*   leftChild,
+    __global const int*   rightChild,
+    __global const int*   sortedBodies,
     __global       float* x,
     __global       float* y,
     __global       float* vx,
     __global       float* vy,
-    __global const float* mass,
-    int numNodes)
+    __global       float* mass)
 {
     int i = get_global_id(0);
     if (i >= NUM_BODIES) return;
 
     float bx = x[i];
     float by = y[i];
+    float bm = mass[i];
     float ax = 0.0f, ay = 0.0f;
 
-    int stack[256];
+    int stack[512]; 
     int top = 0;
-    if (numNodes > 0) stack[top++] = 0;
+    //if (numNodes > 0) stack[top++] = 0;
+    stack[top++] = NUM_BODIES;
+
+    if (i == 0)
+    {
+        printf("%f", nodeMass[0]);
+    }
 
     while (top > 0)
     {
         int node = stack[--top];
-        int bodyJ = nodeBodyIdx[node];
+        //int bodyJ = nodeBodyIdx[node];
 
-        if (bodyJ >= 0)
+        //if (bodyJ >= 0)
+
+        if (node < NUM_BODIES)
         {
-            if (bodyJ == i) continue;
+            //if (bodyJ == i) continue;
 
+            int j = sortedBodies[node];
+            if (j == i)
+            {
+                continue;
+            }
+
+            /*
             float dx    = x[bodyJ] - bx;
             float dy    = y[bodyJ] - by;
+            */
+            float dx = x[j] - bx;
+            float dy = y[j] - by;
             float dist2 = dx*dx + dy*dy + SOFTENING*SOFTENING;
-            float invD  = native_rsqrt(dist2);
-            float invD3 = invD * invD * invD;
-            ax += G * nodeMass[node] * dx * invD3;
-            ay += G * nodeMass[node] * dy * invD3;
+            float dist  = sqrt(dist2);
+            float force = G * bm * mass[j] / dist2;
+            ax += force * (dx / dist);
+            ay += force * (dy / dist);
         }
         else
         {
+            
             float dx    = nodeCOMX[node] - bx;
             float dy    = nodeCOMY[node] - by;
             float dist2 = dx*dx + dy*dy + SOFTENING*SOFTENING;
             float dist  = native_sqrt(dist2);
-            float s     = nodeHalfSize[node] * 2.0f;
+
+            float s = fmax(nodeMaxX[node] - nodeMinX[node], nodeMaxY[node] - nodeMinY[node]);
+
+            float force = G * bm * nodeMass[node] / dist2;
 
             if (s < THETA * dist)
             {
-                float invD  = native_rsqrt(dist2);
-                float invD3 = invD * invD * invD;
-                ax += G * nodeMass[node] * dx * invD3;
-                ay += G * nodeMass[node] * dy * invD3;
-            }
-            else
-            {
-                for (int c = 0; c < 4; c++)
-                {
-                    int child = nodeChildren[node * 4 + c];
-                    if (child >= 0 && top < 255)
-                        stack[top++] = child;
+                ax += force * (dx / dist);
+                ay += force * (dy / dist);
+                if (i == 1)
+                {   
+                    printf("node: %d", node);
+                    printf("mass: %f", nodeMass[node]);
+                    printf("dx %f", dx);
+                    printf("force: %f", force);
+                    printf("dist2: %f", dist2);
+                    printf("dist: %f", dist);
                 }
+            
+            }
+            else if (top < 511)
+            {
+                stack[top++] = leftChild[node];
+                stack[top++] = rightChild[node];
             }
         }
     }

@@ -489,7 +489,7 @@ int main()
     sources.push_back(configSrc);
     sources.push_back(kernelSrc);
 
-    std::string buildOptions = "-cl-fast-relaxed-math -cl-mad-enable -cl-no-signed-zeros";
+    std::string buildOptions = "-cl-std=CL2.0 -cl-mad-enable";
 
     cl::Program program(context, sources);
     try 
@@ -511,18 +511,21 @@ int main()
     cl::Kernel insertKernel         (program, "insertBodiesKernel");
     cl::Kernel comKernel            (program, "computeCOMKernel");
     */
-    cl::Kernel forceAndIntKernel    (program, "forceAndIntegrationKernel");
+    cl::Kernel initTreeKernel       (program, "initTreeKernel");
+    cl::Kernel buildTreeKernel      (program, "buildTreeKernel");
+    cl::Kernel computeCOMKernel     (program, "computeCOMKernel");
+    cl::Kernel forceKernel   (program, "forceAndIntegrationKernel");
     cl::Kernel writePositionsKernel (program, "writePositionsInterleaved");
 
     // ── OpenCL buffers ──────────────────────────────────────────────────────
 
     cl::Buffer buf_x    (context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
     cl::Buffer buf_y    (context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
-    cl::Buffer buf_z    (context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
+    //cl::Buffer buf_z    (context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
 
     cl::Buffer buf_vx   (context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
     cl::Buffer buf_vy   (context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
-    cl::Buffer buf_vz   (context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
+    //cl::Buffer buf_vz   (context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
 
     cl::Buffer buf_mass (context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
 
@@ -534,20 +537,29 @@ int main()
 
     //cl::Buffer buf_nodeMass (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float));
 
-    cl::Buffer buf_nodeCount(context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(int));
+    //cl::Buffer buf_nodeCount(context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(int));
 
-    cl::Buffer buf_nodeSize (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float));
+    //cl::Buffer buf_nodeSize (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float));
 
-    cl::Buffer buf_nextNode (context, CL_MEM_READ_WRITE, sizeof(int));
+    //cl::Buffer buf_nextNode (context, CL_MEM_READ_WRITE, sizeof(int));
 
-    cl::Buffer buf_bbox     (context, CL_MEM_READ_WRITE, 6*sizeof(float));
+    //cl::Buffer buf_bbox     (context, CL_MEM_READ_WRITE, 6*sizeof(float));
 
-    cl::Buffer buf_nodeCOMX    (context, CL_MEM_READ_ONLY, MAX_NODE*sizeof(float));
-    cl::Buffer buf_nodeCOMY    (context, CL_MEM_READ_ONLY, MAX_NODE*sizeof(float));
-    cl::Buffer buf_nodeMass    (context, CL_MEM_READ_ONLY, MAX_NODE*sizeof(float));
-    cl::Buffer buf_nodeHalfSize(context, CL_MEM_READ_ONLY, MAX_NODE*sizeof(float));
-    cl::Buffer buf_nodeChildren(context, CL_MEM_READ_ONLY, MAX_NODE*4*sizeof(int));
-    cl::Buffer buf_nodeBodyIdx (context, CL_MEM_READ_ONLY, MAX_NODE*sizeof(int));
+    cl::Buffer buf_sortedBodies(context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(int));
+    cl::Buffer buf_mortonCodes (context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(uint32_t));
+
+    cl::Buffer buf_leftChild  (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(int));
+    cl::Buffer buf_rightChild (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(int));
+    cl::Buffer buf_parent     (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(int));
+    cl::Buffer buf_nodeAtomic (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(int));
+
+    cl::Buffer buf_nodeCOMX    (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float));
+    cl::Buffer buf_nodeCOMY    (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float));
+    cl::Buffer buf_nodeMass    (context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float));
+    cl::Buffer buf_nodeMinX(context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float));
+    cl::Buffer buf_nodeMinY(context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float));
+    cl::Buffer buf_nodeMaxX(context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float));
+    cl::Buffer buf_nodeMaxY(context, CL_MEM_READ_WRITE, MAX_NODE*sizeof(float));
 
     // ── Shared VBO buffer ───────────────────────────────────────────────────
 
@@ -567,6 +579,8 @@ int main()
         std::cerr << "ERROR: GL sharing required for this build\n";
         return 1;
     }
+
+    std::cout << platform.getInfo<CL_PLATFORM_VERSION>() << std::endl;
 
     // ── Init bodies ─────────────────────────────────────────────────────────
 
@@ -627,8 +641,8 @@ int main()
         /*
         h_vx[i] = 0.0f;
         h_vy[i] = 0.0f;
-        h_vz[i] = 0.0f;
         */
+        h_vz[i] = 0.0f;
 
     }
 
@@ -636,15 +650,16 @@ int main()
 
     queue.enqueueWriteBuffer(buf_x,    CL_TRUE, 0, NUM_BODIES*sizeof(float), h_x.data());
     queue.enqueueWriteBuffer(buf_y,    CL_TRUE, 0, NUM_BODIES*sizeof(float), h_y.data());
-    queue.enqueueWriteBuffer(buf_z,    CL_TRUE, 0, NUM_BODIES*sizeof(float), h_z.data());
+    //queue.enqueueWriteBuffer(buf_z,    CL_TRUE, 0, NUM_BODIES*sizeof(float), h_z.data());
     queue.enqueueWriteBuffer(buf_vx,   CL_TRUE, 0, NUM_BODIES*sizeof(float), h_vx.data());
     queue.enqueueWriteBuffer(buf_vy,   CL_TRUE, 0, NUM_BODIES*sizeof(float), h_vy.data());
-    queue.enqueueWriteBuffer(buf_vz,   CL_TRUE, 0, NUM_BODIES*sizeof(float), h_vz.data());
+    //queue.enqueueWriteBuffer(buf_vz,   CL_TRUE, 0, NUM_BODIES*sizeof(float), h_vz.data());
     queue.enqueueWriteBuffer(buf_mass, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_mass.data());
 
 
-    std::vector<uint32_t> mortonCodes(NUM_BODIES);
+    std::vector<uint32_t> h_mortonCodes(NUM_BODIES);
     std::vector<int>      sortedOrder(NUM_BODIES);
+    std::vector<int>      h_sortedBodies(NUM_BODIES);
     std::vector<int>      scratchBuf(NUM_BODIES);
     std::vector<QNode>    nodes;
     nodes.reserve(MAX_NODE);
@@ -658,9 +673,10 @@ int main()
 
     cl::NDRange global(NUM_BODIES);
     cl::NDRange local(THREADS);
-    cl::NDRange globalTree(MAX_NODE);
+    cl::NDRange globalNodes(MAX_NODE);
     cl::NDRange one(1);
     cl::NDRange localBBox(64);
+    cl::NDRange globalInternal(NUM_BODIES - 64);
 
     /*
     int startNode = 1;
@@ -788,11 +804,12 @@ int main()
         queue.enqueueReadBuffer(buf_y, CL_TRUE,  0, NUM_BODIES*sizeof(float), h_y.data());
 
         float minX = h_x[0], maxX = h_x[0], minY = h_y[0], maxY = h_y[0];
-        for (int i = 1; i < NUM_BODIES; i++) {
-            if (h_x[i] < minX) minX = h_x[i];
-            if (h_x[i] > maxX) maxX = h_x[i];
-            if (h_y[i] < minY) minY = h_y[i];
-            if (h_y[i] > maxY) maxY = h_y[i];
+        for (int i = 1; i < NUM_BODIES; i++) 
+        {
+            minX = std::min(minX, h_x[i]); 
+            maxX = std::max(maxX, h_x[i]);
+            minY = std::min(minY, h_y[i]); 
+            maxY = std::max(maxY, h_y[i]);
         }
         float rangeX = std::max(maxX - minX, 1.0f);
         float rangeY = std::max(maxY - minY, 1.0f);
@@ -800,55 +817,69 @@ int main()
         for (int i = 0; i < NUM_BODIES; i++) {
             uint32_t ix = std::min((uint32_t)((h_x[i] - minX) / rangeX * 1023.0f), 1023u);
             uint32_t iy = std::min((uint32_t)((h_y[i] - minY) / rangeY * 1023.0f), 1023u);
-            mortonCodes[i] = morton2D(ix, iy);
+            h_mortonCodes[i] = morton2D(ix, iy);
         }
         std::iota(sortedOrder.begin(), sortedOrder.end(), 0);
         std::sort(sortedOrder.begin(), sortedOrder.end(),
-                  [&](int a, int b){ return mortonCodes[a] < mortonCodes[b]; });
+                  [&](int a, int b){ return h_mortonCodes[a] < h_mortonCodes[b]; });
 
-        float treeHalf = std::max(rangeX, rangeY) * 0.5f + 1.0f;
-        float treeCX   = (minX + maxX) * 0.5f;
-        float treeCY   = (minY + maxY) * 0.5f;
-
-        nodes.clear();
-        buildQuadtree(nodes, sortedOrder, scratchBuf,
-                      h_x, h_y, h_mass,
-                      0, NUM_BODIES,
-                      treeCX, treeCY, treeHalf,
-                      0);
-
-        int numNodes = (int)nodes.size();
-
-        for (int k = 0; k < numNodes; k++) {
-            h_nodeCOMX[k]     = nodes[k].comX;
-            h_nodeCOMY[k]     = nodes[k].comY;
-            h_nodeMass[k]     = nodes[k].mass;
-            h_nodeHalfSize[k] = nodes[k].halfSize;
-            h_nodeBodyIdx[k]  = nodes[k].bodyIdx;
-            for (int c = 0; c < 4; c++)
-                h_nodeChildren[k * 4 + c] = nodes[k].children[c];
+        std::vector<uint32_t> sortedCodes(NUM_BODIES);
+        for (int i = 0; i < NUM_BODIES; i++)
+        {
+            sortedCodes[i] = h_mortonCodes[sortedOrder[i]];
         }
 
-        queue.enqueueWriteBuffer(buf_nodeCOMX,     CL_FALSE, 0, numNodes*sizeof(float),   h_nodeCOMX.data());
-        queue.enqueueWriteBuffer(buf_nodeCOMY,     CL_FALSE, 0, numNodes*sizeof(float),   h_nodeCOMY.data());
-        queue.enqueueWriteBuffer(buf_nodeMass,     CL_FALSE, 0, numNodes*sizeof(float),   h_nodeMass.data());
-        queue.enqueueWriteBuffer(buf_nodeHalfSize, CL_FALSE, 0, numNodes*sizeof(float),   h_nodeHalfSize.data());
-        queue.enqueueWriteBuffer(buf_nodeChildren, CL_FALSE, 0, numNodes*4*sizeof(int),   h_nodeChildren.data());
-        queue.enqueueWriteBuffer(buf_nodeBodyIdx,  CL_TRUE,  0, numNodes*sizeof(int),     h_nodeBodyIdx.data());
+        queue.enqueueWriteBuffer(buf_sortedBodies, CL_FALSE, 0, NUM_BODIES*sizeof(int), sortedOrder.data());
+        queue.enqueueWriteBuffer(buf_mortonCodes,  CL_TRUE,  0, NUM_BODIES*sizeof(uint32_t), sortedCodes.data());
+        initTreeKernel.setArg(0, buf_nodeAtomic);
+        initTreeKernel.setArg(1, buf_parent);
+        initTreeKernel.setArg(2, buf_leftChild);
+        initTreeKernel.setArg(3, buf_rightChild);
+        initTreeKernel.setArg(4, buf_nodeMass);
+        queue.enqueueNDRangeKernel(initTreeKernel, cl::NullRange, globalNodes, local);
 
-        forceAndIntKernel.setArg(0,  buf_nodeCOMX);
-        forceAndIntKernel.setArg(1,  buf_nodeCOMY);
-        forceAndIntKernel.setArg(2,  buf_nodeMass);
-        forceAndIntKernel.setArg(3,  buf_nodeHalfSize);
-        forceAndIntKernel.setArg(4,  buf_nodeChildren);
-        forceAndIntKernel.setArg(5,  buf_nodeBodyIdx);
-        forceAndIntKernel.setArg(6,  buf_x);
-        forceAndIntKernel.setArg(7,  buf_y);
-        forceAndIntKernel.setArg(8,  buf_vx);
-        forceAndIntKernel.setArg(9,  buf_vy);
-        forceAndIntKernel.setArg(10, buf_mass);
-        forceAndIntKernel.setArg(11, numNodes);
-        queue.enqueueNDRangeKernel(forceAndIntKernel, cl::NullRange, global, local);
+        buildTreeKernel.setArg(0, buf_mortonCodes);
+        buildTreeKernel.setArg(1, buf_leftChild);
+        buildTreeKernel.setArg(2, buf_rightChild);
+        buildTreeKernel.setArg(3, buf_parent);
+        queue.enqueueNDRangeKernel(buildTreeKernel, cl::NullRange, globalInternal, local);
+
+        computeCOMKernel.setArg(0,  buf_sortedBodies);
+        computeCOMKernel.setArg(1,  buf_x);
+        computeCOMKernel.setArg(2,  buf_y);
+        computeCOMKernel.setArg(3,  buf_mass);
+        computeCOMKernel.setArg(4,  buf_nodeCOMX);
+        computeCOMKernel.setArg(5,  buf_nodeCOMY);
+        computeCOMKernel.setArg(6,  buf_nodeMass);
+        computeCOMKernel.setArg(7,  buf_nodeMinX);
+        computeCOMKernel.setArg(8,  buf_nodeMinY);
+        computeCOMKernel.setArg(9,  buf_nodeMaxX);
+        computeCOMKernel.setArg(10, buf_nodeMaxY);
+        computeCOMKernel.setArg(11, buf_leftChild);
+        computeCOMKernel.setArg(12, buf_rightChild);
+        computeCOMKernel.setArg(13, buf_parent);
+        computeCOMKernel.setArg(14, buf_nodeAtomic);
+        queue.enqueueNDRangeKernel(computeCOMKernel, cl::NullRange, global, local);
+
+        queue.finish();
+
+        // 8. Force + integration
+        forceKernel.setArg(0,  buf_nodeCOMX);
+        forceKernel.setArg(1,  buf_nodeCOMY);
+        forceKernel.setArg(2,  buf_nodeMass);
+        forceKernel.setArg(3,  buf_nodeMinX);
+        forceKernel.setArg(4,  buf_nodeMinY);
+        forceKernel.setArg(5,  buf_nodeMaxX);
+        forceKernel.setArg(6,  buf_nodeMaxY);
+        forceKernel.setArg(7,  buf_leftChild);
+        forceKernel.setArg(8,  buf_rightChild);
+        forceKernel.setArg(9,  buf_sortedBodies);
+        forceKernel.setArg(10, buf_x);
+        forceKernel.setArg(11, buf_y);
+        forceKernel.setArg(12, buf_vx);
+        forceKernel.setArg(13, buf_vy);
+        forceKernel.setArg(14, buf_mass);
+        queue.enqueueNDRangeKernel(forceKernel, cl::NullRange, global, local);
 
         std::vector<cl::Memory> shared = { buf_pos_gl[current] };
         writePositionsKernel.setArg(0, buf_x);
