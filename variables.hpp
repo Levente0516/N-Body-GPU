@@ -1,16 +1,19 @@
 #ifndef VARIABLES_H
 #define VARIABLES_H
 
-#define NUM_BODIES          16384 //65536                    //32768
-#define MAX_NODE            (NUM_BODIES * 8)
-#define THREADS             64
-#define SPAWN_RANGE         400000.0f
-#define EMPTY               -1
-#define LOCKED              -2
-#define THETA               0.5f
-#define G                   40.0f
-#define SOFTENING           5000.0f
-#define DT                  2.0f 
-#define CAMERAZOOM          2
+#define NUM_BODIES   32768//131072
+#define THREADS      64
+#define WARPSIZE     32
+#define SPAWN_RANGE  800000.0f
+#define EMPTY        -1
+#define LOCKED       -2
+#define THETA        0.5f
+#define G            5.0f
+#define SOFTENING    5000.0f
+#define DT           0.001f
+#define CAMERAZOOM   2
+#define MAXDEPTH     32
+
+#define MAX_NODE     (NUM_BODIES * 2 + 8192)
 
 #endif

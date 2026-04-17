@@ -14,7 +14,6 @@ void main()
     float d = length(gl_PointCoord - vec2(0.5));
     float alpha = exp(-d * 8.0);
     
-    // Blue gradient from dark blue to light blue/cyan
     float t = 1.0 - d * 1.5;
     vec3 blueColor = vec3(0.0, 0.3 + t * 0.5, 0.6 + t * 0.4);
     
