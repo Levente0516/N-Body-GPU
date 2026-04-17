@@ -10,13 +10,14 @@ __kernel void buildTreeKernel(
     __global float* x,
     __global float* y,
     __global float* z,
-    __global float* mass,
-    __global int* child,
+    __global volatile float* mass,
+    __global volatile int* child,
     __global int* start,
-    __global float* nodeSize,
-    __global int* bottom,
-    __global int* maxDepth,
-    __global int* numNodes)
+    __global volatile float* nodeSize,
+    __global volatile int* bottom,
+    __global volatile int* maxDepth,
+    __global int* numNodes,
+    __global int* parent)
 {
 
     const int   root   = NUMBER_OF_NODES;
@@ -100,6 +101,7 @@ __kernel void buildTreeKernel(
                 if (c == EMPTY)
                 {
                     child[locked] = bodyIdx;
+                    parent[bodyIdx] = node;
                 }
                 else
                 {
@@ -116,6 +118,7 @@ __kernel void buildTreeKernel(
                             //child[locked] = c;
                             return;
                         }
+                        parent[cell] = node;
                         patch = max(patch, cell);
 
                         float offX = (float)((childPath & 1)) * currentR;
@@ -156,6 +159,7 @@ __kernel void buildTreeKernel(
                         {
                             exOct += 4;
                         }
+                        parent[c] = cell;
                         child[NUMBER_OF_CELLS * cell + exOct] = c;
 
                         node = cell;
@@ -177,6 +181,7 @@ __kernel void buildTreeKernel(
                         c = child[NUMBER_OF_CELLS * node + childPath];
                     }while(c >= 0);
 
+                    parent[bodyIdx] = node;
                     child[NUMBER_OF_CELLS * node + childPath] = bodyIdx;
                     
                     mem_fence(CLK_GLOBAL_MEM_FENCE);

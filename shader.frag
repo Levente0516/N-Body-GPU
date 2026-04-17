@@ -1,21 +1,14 @@
 #version 330 core
-
-out vec4 outColor;
+uniform sampler2D uSprite;
+out vec4 fragColor;
 
 void main()
 {
-    vec2 uv = gl_PointCoord * 2.0 - 1.0;
+    vec4 tex = texture(uSprite, gl_PointCoord);
 
-    float r2 = dot(uv, uv);
+    // Discard fully transparent pixels so they don't write depth
+    if (tex.a < 0.01) discard;
 
-    if (r2 > 1.0)
-        discard;
-
-    float d = length(gl_PointCoord - vec2(0.5));
-    float alpha = exp(-d * 8.0);
-    
-    float t = 1.0 - d * 1.5;
-    vec3 blueColor = vec3(0.0, 0.3 + t * 0.5, 0.6 + t * 0.4);
-    
-    outColor = vec4(blueColor, alpha);
+    // Additive-friendly: tint warm white, modulate by texture alpha
+    fragColor = vec4(tex.rgb * vec3(1.0, 0.85, 0.6), tex.a * 0.8);
 }

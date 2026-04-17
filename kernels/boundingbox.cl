@@ -8,9 +8,9 @@
 __attribute__((reqd_work_group_size(THREADS, 1, 1)))
 __kernel void boundingBoxKernel(
     __global int* step, 
-    __global float* pos_x,
-    __global float* pos_y, 
-    __global float* pos_z,
+    __global volatile float* pos_x,
+    __global volatile float* pos_y, 
+    __global volatile float* pos_z,
     __global int* blockCount, 
     __global int* bottom,
     __global float* mass, 

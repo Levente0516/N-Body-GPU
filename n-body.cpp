@@ -31,14 +31,17 @@
 #include <CL/cl_gl.h>
 #include <wingdi.h>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 int current = 0;
 
 int calcNumNodes()
 {
     int numNodes = NUM_BODIES * 2;
-    if (numNodes < 1024 * 32)
+    if (numNodes < 1024 * 7)
     {
-        numNodes = 1024 * 32;
+        numNodes = 1024 * 7;
     }
     while ((numNodes & (WARPSIZE - 1)) != 0)
     {
@@ -119,6 +122,8 @@ public:
     GLuint vbo[2];
     GLuint vao = 0;
     GLuint program = 0;
+    GLuint spriteTexture = 0;
+    GLuint massVBO;
 
     void init()
     {
@@ -138,6 +143,8 @@ public:
     }
 
     GLuint getVBO(int i) { return vbo[i]; }
+
+    GLuint getMassVBO() { return massVBO; }
 
 private:
     void initWindow()
@@ -253,11 +260,12 @@ private:
         for (int i = 0; i < 2; i++)
         {
             glBindBuffer(GL_ARRAY_BUFFER, vbo[i]);
-            glBufferData(GL_ARRAY_BUFFER,
-                         sizeof(float) * 3 * NUM_BODIES,
-                         nullptr,
-                         GL_STREAM_DRAW);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 3 * NUM_BODIES, nullptr, GL_STREAM_DRAW);
         }
+
+        glGenBuffers(1, &massVBO);
+        glBindBuffer(GL_ARRAY_BUFFER, massVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * NUM_BODIES, nullptr, GL_STREAM_DRAW);
 
         // VAO
         glGenVertexArrays(1, &vao);
@@ -265,11 +273,16 @@ private:
 
         // bind first buffer just to define layout
         glBindBuffer(GL_ARRAY_BUFFER, vbo[0]);
-
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, (void *)0);
         glEnableVertexAttribArray(0);
 
+        glBindBuffer(GL_ARRAY_BUFFER, massVBO);
+        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 0, (void*)0);
+        glEnableVertexAttribArray(1);
+
         glBindVertexArray(0);
+
+
 
         // Shaders
         std::string vertSrc = loadFile("shader.vert");
@@ -280,6 +293,29 @@ private:
         glEnable(GL_BLEND);
         glDisable(GL_DEPTH_TEST);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+
+        auto loadTexture = [](const char* path) -> GLuint {
+            int w, h, ch;
+            // Flip vertically because OpenGL UV origin is bottom-left
+            stbi_set_flip_vertically_on_load(false);
+            unsigned char* data = stbi_load(path, &w, &h, &ch, 4); // force RGBA
+            if (!data) {
+                std::cerr << "Failed to load texture: " << path << std::endl;
+                return 0;
+            }
+            GLuint tex;
+            glGenTextures(1, &tex);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            stbi_image_free(data);
+            return tex;
+        };
+
+        spriteTexture = loadTexture("texture/spotlight_7.png");
 
         std::cout << "OpenGL initialized" << std::endl;
         std::cout << "Renderer: " << glGetString(GL_RENDERER) << std::endl;
@@ -327,6 +363,11 @@ private:
 
         glBindVertexArray(vao);
         glBindBuffer(GL_ARRAY_BUFFER, vbo[drawBuf]);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float)*3, (void*)0);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, spriteTexture);
+        glUniform1i(glGetUniformLocation(program, "uSprite"), 0);
 
         glDrawArrays(GL_POINTS, 0, NUM_BODIES);
 
@@ -340,6 +381,7 @@ private:
         glDeleteBuffers(1, &vbo[0]);
         glDeleteBuffers(1, &vbo[1]);
         glDeleteVertexArrays(1, &vao);
+        glDeleteTextures(1, &spriteTexture);
         glDeleteProgram(program);
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -398,7 +440,8 @@ int main()
                             loadFile("kernels/sort.cl") +
                             loadFile("kernels/force.cl") +
                             loadFile("kernels/integration.cl") +
-                            loadFile("kernels/writepos.cl");
+                            loadFile("kernels/writepos.cl") +
+                            loadFile("kernels/valid.cl");
 
     cl::Program::Sources sources;
     sources.push_back(configSrc);
@@ -428,6 +471,7 @@ int main()
     cl::Kernel forceKernel        (program, "forceKernel");
     cl::Kernel integrateKernel    (program, "integrateKernel");
     cl::Kernel writePositionsKernel(program, "writePositionsInterleaved");
+    cl::Kernel validKernel(program, "validateTreeKernel");
 
     // ── OpenCL buffers ──────────────────────────────────────────────────────
 
@@ -471,16 +515,22 @@ int main()
 
     std::vector<int> child(8 * (numNodes + 1), 0);
     std::vector<int> start((numNodes + 1), 0);
-    std::vector<int> h_sorted(numNodes + 1, 0);
+    //std::vector<int> h_sorted(numNodes + 1, 0);
 
 
     cl::Buffer buf_sorted(context, CL_MEM_READ_WRITE, (numNodes+1)*sizeof(int));
 
     int step = -1;
+    int zero = 0;
 
     cl::Buffer buf_child(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int) * child.size(), child.data());
     cl::Buffer buf_start(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int) * start.size(), start.data());
     cl::Buffer buf_step(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &step);
+
+    cl::Buffer buf_errorFlag(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &zero);
+
+    cl::Buffer buf_ready(context, CL_MEM_READ_WRITE, sizeof(int) * (numNodes + 1));
+    cl::Buffer buf_parent(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int) * (numNodes + 1), &step);
 
     // ── Shared VBO buffer ───────────────────────────────────────────────────
     cl::BufferGL buf_pos_gl[2];
@@ -576,6 +626,18 @@ int main()
     queue.enqueueWriteBuffer(buf_vz, CL_TRUE, 0, NUM_BODIES * sizeof(float), h_vz.data());
     queue.enqueueWriteBuffer(buf_mass, CL_TRUE, 0, NUM_BODIES * sizeof(float), h_mass.data());
 
+    std::vector<int> h_sorted(numNodes + 1, 0);
+    for (int i = 0; i < NUM_BODIES; i++) h_sorted[i] = i;
+    queue.enqueueWriteBuffer(buf_sorted, CL_TRUE, 0, (numNodes+1)*sizeof(int), h_sorted.data());
+
+    std::vector<float> h_zeros(NUM_BODIES, 0.0f);
+    queue.enqueueWriteBuffer(buf_accX, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_zeros.data());
+    queue.enqueueWriteBuffer(buf_accY, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_zeros.data());
+    queue.enqueueWriteBuffer(buf_accZ, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_zeros.data());
+
+    glBindBuffer(GL_ARRAY_BUFFER, sim.getMassVBO());
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(float)*NUM_BODIES, h_mass.data());
+
     // ── Simulate lambda ─────────────────────────────────────────────────────
 
     boundingBoxKernel.setArg(0, buf_step);
@@ -607,6 +669,7 @@ int main()
     buildTreeKernel.setArg(7, buf_bottom);
     buildTreeKernel.setArg(8, buf_maxDepth);
     buildTreeKernel.setArg(9, buf_numNodes);
+    buildTreeKernel.setArg(10, buf_parent);
 
     // summarizeTree
     sumInfoKernel.setArg(0, buf_x);         
@@ -614,10 +677,9 @@ int main()
     sumInfoKernel.setArg(2, buf_z);
     sumInfoKernel.setArg(3, buf_mass);
     sumInfoKernel.setArg(4, buf_child);
-    sumInfoKernel.setArg(5, buf_nodeCount);
-    sumInfoKernel.setArg(6, buf_bottom);
-    sumInfoKernel.setArg(7, buf_numNodes);
-
+    sumInfoKernel.setArg(5, buf_parent);
+    sumInfoKernel.setArg(6, buf_ready);
+    sumInfoKernel.setArg(7, buf_nodeCount);
     // sort
     sortKernel.setArg(0, buf_child);
     sortKernel.setArg(1, buf_nodeCount);
@@ -655,51 +717,55 @@ int main()
     writePositionsKernel.setArg(1, buf_y);
     writePositionsKernel.setArg(2, buf_z);
 
-    cl::NDRange globalN    (NUM_BODIES);
-    cl::NDRange globalNodes(numNodes);
+    cl::NDRange global (NUM_BODIES);
+    cl::NDRange safe    (device.getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>() * THREADS);
     cl::NDRange local      (THREADS);
+
+    std::cout << device.getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>() << std::endl; // 7
+    std::cout << device.getInfo<CL_DEVICE_WAVEFRONT_WIDTH_AMD>()<< std::endl; // 64
 
     auto simulateStep = [&]()
     {
         try 
         {
             int zero = 0, one_val = 1;
-            // blockCount and maxDepth are reset by host; step/bottom reset inside boundingBox
-            queue.enqueueWriteBuffer(buf_blockCount, CL_FALSE, 0, sizeof(int), &zero);
-            queue.enqueueWriteBuffer(buf_maxDepth,   CL_FALSE, 0, sizeof(int), &one_val);
+
+            queue.enqueueWriteBuffer(buf_blockCount, CL_TRUE, 0, sizeof(int), &zero);
+            queue.enqueueWriteBuffer(buf_maxDepth,   CL_TRUE, 0, sizeof(int), &one_val);
+            queue.enqueueFillBuffer(buf_ready, zero, 0, sizeof(int) * (numNodes + 1));
 
             int writeBuf = current;
             std::vector<cl::Memory> shared = { buf_pos_gl[writeBuf] };
             writePositionsKernel.setArg(3, buf_pos_gl[writeBuf]);
 
             // Each kernel must fully complete before the next starts
-            queue.enqueueNDRangeKernel(boundingBoxKernel, cl::NullRange, globalN,local);
+            queue.enqueueNDRangeKernel(boundingBoxKernel, cl::NullRange, global, local);
             queue.enqueueBarrierWithWaitList();
             
-            queue.enqueueNDRangeKernel(buildTreeKernel, cl::NullRange, globalN,local);
+            queue.enqueueNDRangeKernel(buildTreeKernel, cl::NullRange, global, local);
             queue.enqueueBarrierWithWaitList();
-            
-            
+
+            queue.enqueueNDRangeKernel(sumInfoKernel, cl::NullRange, global, local);
+            queue.enqueueBarrierWithWaitList();
             /*
-            queue.enqueueNDRangeKernel(sumInfoKernel, cl::NullRange, globalNodes, local);
-            queue.enqueueBarrierWithWaitList();
             */
-            /*
-            queue.enqueueNDRangeKernel(sortKernel, cl::NullRange, globalNodes, local);
+            queue.enqueueNDRangeKernel(sortKernel, cl::NullRange, global, local);
             queue.enqueueBarrierWithWaitList();
            
-            queue.enqueueNDRangeKernel(forceKernel, cl::NullRange, globalN, local);
+            /*
+            queue.enqueueNDRangeKernel(forceKernel, cl::NullRange, global, local);
             queue.enqueueBarrierWithWaitList();
             
-            queue.enqueueNDRangeKernel(integrateKernel, cl::NullRange, globalN, local);
-            queue.enqueueBarrierWithWaitList();
             */
+            queue.enqueueNDRangeKernel(integrateKernel, cl::NullRange, global, local);
+            queue.enqueueBarrierWithWaitList();
 
             queue.enqueueAcquireGLObjects(&shared);
-            queue.enqueueNDRangeKernel(writePositionsKernel, cl::NullRange, globalN, local);
+            queue.enqueueNDRangeKernel(writePositionsKernel, cl::NullRange, global, local);
             queue.enqueueReleaseGLObjects(&shared);
 
-            queue.finish();
+            queue.flush();
+
             current = 1 - current;
         }
         catch (cl::Error& e) {

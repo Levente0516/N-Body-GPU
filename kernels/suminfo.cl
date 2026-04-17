@@ -11,117 +11,63 @@ __kernel void summarizeTreeKernel(
     __global float* y, 
     __global float* z,
     __global volatile float* mass,
-    __global int* child,
-    __global int* nodeCount,
-    __global int* bottom,
-    __global int* numNodes)
+    __global volatile int* child,
+    __global int* parentArray, // You'll need to store parent pointers during Build
+    __global int* readyCounter,
+    __global int* nodeCount)
 {
-    __local volatile int lcChild[THREADS * NUMBER_OF_CELLS];
+    int curr = get_global_id(0);
+    if (curr >= NUMBER_OF_NODES) return;
 
-    const int stepSize = get_local_size(0) * get_num_groups(0);
-    const int localId = get_local_id(0);
-    const int btm = *bottom;
+    // Start from a leaf (body)
+    int parent = parentArray[curr];
 
-    int node = (btm & (-WARPSIZE)) + get_global_id(0);
-    if (node < btm)
+    while (parent != -1) // While not at the root
     {
-        node += stepSize;
-    } 
+        // Increment the parent's "children finished" counter
+        int finished = atom_inc(&readyCounter[parent]);
 
-    int   missing  = 0;
-    int   cbCount  = 0;
-    float cellMass = 0.0f;
-    float cx = 0.0f; 
-    float cy = 0.0f; 
-    float cz = 0.0f;
+        if (finished < 7) {
+            return; 
+        }
 
-    while (node <= NUMBER_OF_NODES) 
-    {
-        if (missing == 0) 
-        {
-            cbCount = 0; 
-            cellMass = 0.0f; 
-            cx = cy = cz = 0.0f;
-            int usedIdx = 0;
+        // --- I AM THE LAST CHILD ---
+        // Now I safely calculate the Parent's Center of Mass
+        float m_total = 0.0f;
+        float tx = 0;
+        float ty = 0;
+        float tz = 0;
+        int count = 0;
 
-#pragma unroll NUMBER_OF_CELLS
-            for (int i = 0; i < NUMBER_OF_CELLS; i++) 
-            {
-                int c = child[node * NUMBER_OF_CELLS + i];
-
-                if (c >= 0)
+        for (int i = 0; i < 8; i++) {
+            int c = child[parent * 8 + i];
+            if (c != -1) {
+                float m = mass[c];
+                if (m > 0.0f)
                 {
-                    if (i != usedIdx) 
-                    {
-                        child[NUMBER_OF_CELLS * node + i] = EMPTY;
-                        child[NUMBER_OF_CELLS * node + usedIdx] = c;
-                    }
-
-                    lcChild[THREADS * missing + localId] = c;
-
-                    float m = mass[c];
-                    missing++;
-
-                    if (m >= 0.0f) 
-                    {
-                        missing--;
-                        if (c >= NUM_BODIES)
-                        {
-                            cbCount += nodeCount[c] - 1;
-                        } 
-                        cellMass += m;
-                        cx += x[c] * m; 
-                        cy += y[c] * m; 
-                        cz += z[c] * m;
-                    }
-                    ++usedIdx;
+                    m_total += m;
+                    tx += x[c] * m;
+                    ty += y[c] * m;
+                    tz += z[c] * m;
+                    count += (c >= NUMBER_OF_NODES) ? nodeCount[c] : 1;
                 }
             }
-
-            cbCount += usedIdx;
         }
 
-        if (missing != 0) 
+        if (m_total > 0.0f) 
         {
-            float last_m;
-            do 
-            {
-                int c  = lcChild[(missing - 1) * THREADS + localId];
-
-                last_m = mass[c];
-
-                if (last_m >= 0.0f)
-                {
-                    missing--;
-                    if (c >= NUM_BODIES)
-                    {
-                        cbCount += nodeCount[c] - 1;
-                    } 
-                    cellMass += last_m;
-                    cx += x[c] * last_m; 
-                    cy += y[c] * last_m; 
-                    cz += z[c] * last_m;
-                }
-            } while (last_m >= 0.0f && missing != 0);
+            float invM = 1.0f / m_total;
+            x[parent] = tx * invM;
+            y[parent] = ty * invM;
+            z[parent] = tz * invM;
+            nodeCount[parent] = count;
         }
 
-        if (missing == 0) 
-        {
-            nodeCount[node] = cbCount;
+        // Move up to the next level
+        curr = parent;
+        parent = parentArray[curr];
 
-            if (cellMass > 0.0f)
-            {
-                float inv = 1.0f / cellMass;
-                x[node] = cx * inv;
-                y[node] = cy * inv;
-                z[node] = cz * inv;
-            }
-
-            mem_fence(CLK_GLOBAL_MEM_FENCE);
-
-            mass[node] = cellMass;
-
-            node += stepSize;
-        }
+        // Ensure memory is visible to the next atomic check
+        mem_fence(CLK_GLOBAL_MEM_FENCE);
     }
 }

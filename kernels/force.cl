@@ -11,7 +11,7 @@ __kernel void forceKernel(
     __global float* z,
     __global float* mass,
     __global int*   child,
-    __global float* nodeSize,
+    __global volatile float* nodeSize,
     __global int*   sorted,
     __global float* accX, 
     __global float* accY, 
@@ -43,6 +43,7 @@ __kernel void forceKernel(
         for (int i = 0; i < NUMBER_OF_CELLS; i++)
         {
             const int c = child[node * NUMBER_OF_CELLS + i];
+
             if (c < 0)
             {
                 break;

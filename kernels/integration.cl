@@ -21,6 +21,8 @@ __kernel void integrateKernel(
 
     for (int i = get_global_id(0); i < NUM_BODIES; i += stepSize)
     {
+        if (i == 0) continue;  // black hole stays fixed
+
         float delta_vx = accX[i] * DT * 0.5f;
         float delta_vy = accY[i] * DT * 0.5f;
         float delta_vz = accZ[i] * DT * 0.5f;
@@ -33,9 +35,9 @@ __kernel void integrateKernel(
         y[i]  += velY * DT;
         z[i]  += velZ * DT;
 
-        vx[i] += velX + delta_vx;
-        vy[i] += velY + delta_vy;
-        vz[i] += velZ + delta_vz;
+        vx[i] = velX + delta_vx;
+        vy[i] = velY + delta_vy;
+        vz[i] = velZ + delta_vz;
     }
 }
 
