@@ -106,18 +106,30 @@ __kernel void buildTreeKernel(
                 else
                 {
                     int patch = -1;
+                    bool forceInserted = false;
                     do
                     {
                         depth++;
+
+                        if (currentR < 0.01f || depth > 52)
+                        {
+                            child[NUMBER_OF_CELLS * node + childPath] = bodyIdx;
+                            mem_fence(CLK_GLOBAL_MEM_FENCE);
+                            child[locked] = (patch >= 0) ? patch : c;
+                            bool forceInserted = true;
+                            goto next_body;
+                        }
                         
                         const int cell = atom_dec(bottom) - 1;
 
                         if (cell <= NUM_BODIES)
                         {   
                             *bottom = NUMBER_OF_NODES;
-                            child[locked] = c;  
+                            child[locked] = c;
+                            bool forceInserted = true;  
                             return;
                         }
+
 
                         patch = max(patch, cell);
 
@@ -185,14 +197,17 @@ __kernel void buildTreeKernel(
 
                     }while(c >= 0);
 
-                    child[NUMBER_OF_CELLS * node + childPath] = bodyIdx;
+                    if(!forceInserted)
+                    {
+                        child[NUMBER_OF_CELLS * node + childPath] = bodyIdx;
 
-                    //atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_seq_cst, memory_scope_device);
-                    mem_fence(CLK_GLOBAL_MEM_FENCE);
+                        //atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_seq_cst, memory_scope_device);
+                        mem_fence(CLK_GLOBAL_MEM_FENCE);
 
-                    child[locked] = patch;
+                        child[locked] = patch;
+                    }
                 }
-
+                next_body:
                 localMaxD = max(depth, localMaxD);
                 bodyIdx += stepSize;
                 newBody = true;

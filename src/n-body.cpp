@@ -21,12 +21,14 @@
 #define CL_HPP_MINIMUM_OPENCL_VERSION 200
 #include <GL/gl.h>
 #include <GLFW/glfw3.h>
-#include "variables.hpp"
 #define CL_HPP_ENABLE_EXCEPTIONS
 #ifdef __APPLE__
 #include <OpenCL/opencl.hpp>
 #else
 #include <CL/opencl.hpp>
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
 #endif
 #include <CL/cl_gl.h>
 #include <wingdi.h>
@@ -36,14 +38,32 @@
 const int NUM_BODIES = 32768; //131072 //32768 //
 const int THREADS = 64;
 const int WARPSIZE = 64;
-const float SPAWN_RANGE = 100000.0f;
+const float SPAWN_RANGE = 200000.0f;
 const float THETA = 0.5f;
 const float G = 5.0f;
 const float SOFTENING = 50.0f;
-const float DT = 1.0f;
+const float DT = 0.5f;
 const int CAMERAZOOM = 2;
 const int MAXDEPTH = 64;
 
+enum class DistributionType
+{
+    UNIFORM,
+    DISK,
+    SPHERE,
+    GAUSSIAN,
+    RING
+};
+
+struct SimParams {
+    float g          = 5.0f;
+    float dt         = 1.0f;
+    float theta      = 0.5f;
+    float softening  = 50.0f;
+    int   numBodies  = 32768;
+    int   distType   = 0;  // 0=disk, 1=uniform, 2=sphere, 3=ring
+    bool  restart    = false;
+};
 
 int current = 0;
 
@@ -62,7 +82,6 @@ int calcNumNodes()
     return numNodes;
 }
 
-// ─── OpenGL shader helpers ────────────────────────────────────────────────────
 
 std::string loadFile(const std::string &path)
 {
@@ -110,306 +129,382 @@ GLuint createProgram(const std::string &vertSrc, const std::string &fragSrc)
 
 // ─── Simulation class (OpenGL rendering) ─────────────────────────────────────
 
-class Simulation
+class SimulationRender
 {
-public:
-    float camZoom = SPAWN_RANGE * CAMERAZOOM * 2.0f;
-    float camX = 0.0f;
-    float camY = 0.0f;
-    float camZ = 0.0f;
-    bool dragging = false;
-    double dragStartX = 0.0;
-    double dragStartY = 0.0;
-    double dragStartZ = 0.0;
-    float dragCamStartX = 0.0f;
-    float dragCamStartY = 0.0f;
-    float dragCamStartZ = 0.0f;
-    glm::vec3 camTarget = glm::vec3(0.0f);
-    ;
-    float camYaw = 0.0f;
-    float camPitch = glm::radians(65.0f);
+    public:
+        float camZoom = SPAWN_RANGE * CAMERAZOOM * 2.0f;
+        float camX = 0.0f;
+        float camY = 0.0f;
+        float camZ = 0.0f;
+        bool dragging = false;
+        double dragStartX = 0.0;
+        double dragStartY = 0.0;
+        double dragStartZ = 0.0;
+        float dragCamStartX = 0.0f;
+        float dragCamStartY = 0.0f;
+        float dragCamStartZ = 0.0f;
+        glm::vec3 camTarget = glm::vec3(0.0f);
+        ;
+        float camYaw = 0.0f;
+        float camPitch = glm::radians(65.0f);
 
-    GLFWwindow *window = nullptr;
-    GLuint vbo[2];
-    GLuint vao = 0;
-    GLuint program = 0;
-    GLuint spriteTexture = 0;
-    GLuint massVBO;
+        GLFWwindow *window = nullptr;
+        GLuint vbo[2];
+        GLuint vao = 0;
+        GLuint program = 0;
+        GLuint spriteTexture = 0;
+        GLuint massVBO;
 
-    void init()
-    {
-        initWindow();
-        initGL();
-    }
+        SimParams* simParams = nullptr; 
 
-    void loop(std::function<void()> simulateStep)
-    {
-        while (!glfwWindowShouldClose(window))
+        void init()
         {
-            glfwPollEvents();
-            simulateStep();
-            drawFrame();
+            initWindow();
+            initGL();
         }
-        cleanup();
-    }
 
-    GLuint getVBO(int i) { return vbo[i]; }
-
-    GLuint getMassVBO() { return massVBO; }
-
-private:
-    void initWindow()
-    {
-        if (!glfwInit())
-            exit(1);
-
-        // OpenGL context hints
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-
-        std::cout << "GLFW  init\n";
-
-        std::cout << camZoom << std::endl;
-
-        GLFWmonitor *monitor = glfwGetPrimaryMonitor();
-        const GLFWvidmode *mode = glfwGetVideoMode(monitor);
-
-        std::cout << mode->width << " " << mode->height << std::endl;
-        // std::cout << "Zoom: " << camZoom << "\n CamX: " << camX << "\n CamY: " << camY << std::endl;
-
-        window = glfwCreateWindow(mode->width, mode->height, "N-Body", nullptr, nullptr);
-        glfwMakeContextCurrent(window);
-        glfwSwapInterval(0);
-
-        gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
-
-        std::cout << "GLAD created\n";
-
-        glfwSetWindowUserPointer(window, this);
-
-        glfwSetKeyCallback(window, [](GLFWwindow *w, int key, int, int action, int)
-                           {
-            if (action == GLFW_PRESS && (key == GLFW_KEY_Q || key == GLFW_KEY_ESCAPE))
-            {
-                glfwSetWindowShouldClose(w, GLFW_TRUE);
-            } });
-
-        glfwSetScrollCallback(window, [](GLFWwindow *w, double, double yOffset)
+        void loop(std::function<void()> simulateStep)
         {
-            auto *sim = reinterpret_cast<Simulation *>(glfwGetWindowUserPointer(w));
-
-            double mouseX, mouseY;
-            glfwGetCursorPos(w, &mouseX, &mouseY);
-
-            int winW, winH;
-            glfwGetWindowSize(w, &winW, &winH);
-
-            float worldX = sim->camX + (mouseX / winW - 0.5f) * (SPAWN_RANGE / sim->camZoom);
-            float worldY = sim->camY + (0.5f - mouseY / winH) * (SPAWN_RANGE / sim->camZoom);
-
-            float oldZoom = sim->camZoom;
-            float factor = (yOffset > 0) ? 0.9f : 1.1f;
-            sim->camZoom *= factor;
-
-            float newWorldX = sim->camX + (mouseX / winW - 0.5f) * (SPAWN_RANGE / sim->camZoom);
-            float newWorldY = sim->camY + (0.5f - mouseY / winH) * (SPAWN_RANGE / sim->camZoom);
-
-            sim->camX += worldX - newWorldX;
-            sim->camY += worldY - newWorldY;
-
-            // std::cout << "Zoo: " << sim->camZoom << "\nCamX: " << sim->camX << "\nCamY: " << sim->camY << std::endl;
-        });
-
-        glfwSetMouseButtonCallback(window, [](GLFWwindow *w, int button, int action, int)
-                                   {
-            auto* sim = reinterpret_cast<Simulation*>(glfwGetWindowUserPointer(w));
-            if (button == GLFW_MOUSE_BUTTON_LEFT)
+            while (!glfwWindowShouldClose(window))
             {
-                if (action == GLFW_PRESS)
+                glfwPollEvents();
+                simulateStep();
+                drawFrame();
+            }
+            cleanup();
+        }
+
+        GLuint getVBO(int i) { return vbo[i]; }
+
+        GLuint getMassVBO() { return massVBO; }
+
+    private:
+        void initWindow()
+        {
+            if (!glfwInit())
+                exit(1);
+
+            // OpenGL context hints
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+            glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+            glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+
+            std::cout << "GLFW  init\n";
+
+            std::cout << camZoom << std::endl;
+
+            GLFWmonitor *monitor = glfwGetPrimaryMonitor();
+            const GLFWvidmode *mode = glfwGetVideoMode(monitor);
+
+            std::cout << mode->width << " " << mode->height << std::endl;
+            // std::cout << "Zoom: " << camZoom << "\n CamX: " << camX << "\n CamY: " << camY << std::endl;
+
+            window = glfwCreateWindow(mode->width, mode->height, "N-Body", nullptr, nullptr);
+            glfwMakeContextCurrent(window);
+            glfwSwapInterval(0);
+
+            gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
+
+            std::cout << "GLAD created\n";
+
+            glfwSetWindowUserPointer(window, this);
+
+            glfwSetKeyCallback(window, [](GLFWwindow *w, int key, int, int action, int)
+                            {
+                if (action == GLFW_PRESS && (key == GLFW_KEY_Q || key == GLFW_KEY_ESCAPE))
                 {
-                    sim->dragging = true;
-                    glfwGetCursorPos(w, &sim->dragStartX, &sim->dragStartY);
-                    sim->dragCamStartX = sim->camX;
-                    sim->dragCamStartY = sim->camY;
-                }
-                else 
+                    glfwSetWindowShouldClose(w, GLFW_TRUE);
+                } });
+
+            glfwSetScrollCallback(window, [](GLFWwindow *w, double, double yOffset)
+            {
+                if (ImGui::GetIO().WantCaptureMouse)
                 {
-                    sim->dragging = false;
+                    return;
+                } 
+                auto *sim = reinterpret_cast<SimulationRender*>(glfwGetWindowUserPointer(w));
+
+                double mouseX, mouseY;
+                glfwGetCursorPos(w, &mouseX, &mouseY);
+
+                int winW, winH;
+                glfwGetWindowSize(w, &winW, &winH);
+
+                float worldX = sim->camX + (mouseX / winW - 0.5f) * (SPAWN_RANGE / sim->camZoom);
+                float worldY = sim->camY + (0.5f - mouseY / winH) * (SPAWN_RANGE / sim->camZoom);
+
+                float oldZoom = sim->camZoom;
+                float factor = (yOffset > 0) ? 0.9f : 1.1f;
+                sim->camZoom *= factor;
+
+                float newWorldX = sim->camX + (mouseX / winW - 0.5f) * (SPAWN_RANGE / sim->camZoom);
+                float newWorldY = sim->camY + (0.5f - mouseY / winH) * (SPAWN_RANGE / sim->camZoom);
+
+                sim->camX += worldX - newWorldX;
+                sim->camY += worldY - newWorldY;
+
+                // std::cout << "Zoo: " << sim->camZoom << "\nCamX: " << sim->camX << "\nCamY: " << sim->camY << std::endl;
+            });
+
+            glfwSetMouseButtonCallback(window, [](GLFWwindow *w, int button, int action, int)
+            {
+                if (ImGui::GetIO().WantCaptureMouse)
+                {
+                    return;
+                } 
+                auto* sim = reinterpret_cast<SimulationRender*>(glfwGetWindowUserPointer(w));
+                if (button == GLFW_MOUSE_BUTTON_LEFT)
+                {
+                    if (action == GLFW_PRESS)
+                    {
+                        sim->dragging = true;
+                        glfwGetCursorPos(w, &sim->dragStartX, &sim->dragStartY);
+                        sim->dragCamStartX = sim->camX;
+                        sim->dragCamStartY = sim->camY;
+                    }
+                    else 
+                    {
+                        sim->dragging = false;
+                    }
+                } 
+            });
+
+            glfwSetCursorPosCallback(window, [](GLFWwindow *w, double xpos, double ypos)
+            {
+                if (ImGui::GetIO().WantCaptureMouse)
+                {
+                    return;
+                } 
+                auto* sim = reinterpret_cast<SimulationRender*>(glfwGetWindowUserPointer(w));
+                if (!sim->dragging) return;
+
+                double dx = xpos - sim->dragStartX;
+                double dy = ypos - sim->dragStartY;
+
+                float sensitivity = 0.005f;
+
+                sim->camYaw   += dx * sensitivity;
+                sim->camPitch += dy * sensitivity;
+
+                // clamp pitch so you don't flip
+                sim->camPitch = glm::clamp(
+                    sim->camPitch,
+                    glm::radians(-89.0f),
+                    glm::radians(89.0f)
+                );
+
+                sim->dragStartX = xpos;
+                sim->dragStartY = ypos; 
+            });
+        }
+
+        void initGL()
+        {
+            glGenBuffers(2, vbo);
+
+            for (int i = 0; i < 2; i++)
+            {
+                glBindBuffer(GL_ARRAY_BUFFER, vbo[i]);
+                glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 3 * NUM_BODIES, nullptr, GL_STREAM_DRAW);
+            }
+
+            glGenBuffers(1, &massVBO);
+            glBindBuffer(GL_ARRAY_BUFFER, massVBO);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(float) * NUM_BODIES, nullptr, GL_STREAM_DRAW);
+
+            // VAO
+            glGenVertexArrays(1, &vao);
+            glBindVertexArray(vao);
+
+            // bind first buffer just to define layout
+            glBindBuffer(GL_ARRAY_BUFFER, vbo[0]);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, (void *)0);
+            glEnableVertexAttribArray(0);
+
+            glBindBuffer(GL_ARRAY_BUFFER, massVBO);
+            glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 0, (void*)0);
+            glEnableVertexAttribArray(1);
+
+            glBindVertexArray(0);
+
+
+
+            // Shaders
+            std::string vertSrc = loadFile("shaders/shader.vert");
+            std::string fragSrc = loadFile("shaders/shader.frag");
+            program = createProgram(vertSrc, fragSrc);
+
+            glEnable(GL_PROGRAM_POINT_SIZE);
+            glEnable(GL_BLEND);
+            glDisable(GL_DEPTH_TEST);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+
+            auto loadTexture = [](const char* path) -> GLuint {
+                int w, h, ch;
+                // Flip vertically because OpenGL UV origin is bottom-left
+                stbi_set_flip_vertically_on_load(false);
+                unsigned char* data = stbi_load(path, &w, &h, &ch, 4); // force RGBA
+                if (!data) {
+                    std::cerr << "Failed to load texture: " << path << std::endl;
+                    return 0;
                 }
-            } });
+                GLuint tex;
+                glGenTextures(1, &tex);
+                glBindTexture(GL_TEXTURE_2D, tex);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                stbi_image_free(data);
+                return tex;
+            };
 
-        glfwSetCursorPosCallback(window, [](GLFWwindow *w, double xpos, double ypos)
-                                 {
-            auto* sim = reinterpret_cast<Simulation*>(glfwGetWindowUserPointer(w));
-            if (!sim->dragging) return;
+            spriteTexture = loadTexture("texture/spotlight_7.png");
 
-            double dx = xpos - sim->dragStartX;
-            double dy = ypos - sim->dragStartY;
+            std::cout << "OpenGL initialized" << std::endl;
+            std::cout << "Renderer: " << glGetString(GL_RENDERER) << std::endl;
 
-            float sensitivity = 0.005f;
+            // At the END of initGL(), after everything else:
+            IMGUI_CHECKVERSION();
+            ImGui::CreateContext();
+            ImGuiIO& io = ImGui::GetIO();
+            io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+            ImGui::StyleColorsDark();
+            ImGui_ImplGlfw_InitForOpenGL(window, true);
+            ImGui_ImplOpenGL3_Init("#version 330");
+        }
 
-            sim->camYaw   += dx * sensitivity;
-            sim->camPitch += dy * sensitivity;
+        void drawFrame()
+        {
+            int w, h;
+            glfwGetFramebufferSize(window, &w, &h);
+            glViewport(0, 0, w, h);
+            glClearColor(0, 0, 0, 1);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-            // clamp pitch so you don't flip
-            sim->camPitch = glm::clamp(
-                sim->camPitch,
-                glm::radians(-89.0f),
-                glm::radians(89.0f)
+            float aspect = (float)w / (float)h;
+
+            glm::mat4 projection = glm::perspective(
+                glm::radians(45.0f), // Field of view
+                aspect,
+                100.0f,              // Near plane (increase this)
+                SPAWN_RANGE * 100.0f // Far plane
             );
 
-            sim->dragStartX = xpos;
-            sim->dragStartY = ypos; });
-    }
+            glm::vec3 direction;
+            direction.x = cos(camPitch) * sin(camYaw);
+            direction.y = sin(camPitch);
+            direction.z = -cos(camPitch) * cos(camYaw);
 
-    void initGL()
-    {
-        glGenBuffers(2, vbo);
+            glm::vec3 position = camTarget - direction * camZoom;
 
-        for (int i = 0; i < 2; i++)
-        {
-            glBindBuffer(GL_ARRAY_BUFFER, vbo[i]);
-            glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 3 * NUM_BODIES, nullptr, GL_STREAM_DRAW);
+            glm::mat4 view = glm::lookAt(
+                position,
+                camTarget,
+                glm::vec3(0, 1, 0));
+
+            glUseProgram(program);
+            glUniformMatrix4fv(
+                glGetUniformLocation(program, "projection"),
+                1, GL_FALSE, glm::value_ptr(projection));
+
+            glUniformMatrix4fv(
+                glGetUniformLocation(program, "view"),
+                1, GL_FALSE, glm::value_ptr(view));
+
+            int drawBuf = 1 - current;
+
+            GLint blackHoleLoc = glGetUniformLocation(program, "blackHoleIndex");
+            glUniform1i(blackHoleLoc, 0);
+
+            glBindVertexArray(vao);
+            glBindBuffer(GL_ARRAY_BUFFER, vbo[drawBuf]);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float)*3, (void*)0);
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, spriteTexture);
+            glUniform1i(glGetUniformLocation(program, "uSprite"), 0);
+
+            glDrawArrays(GL_POINTS, 0, NUM_BODIES);
+
+            glBindVertexArray(0);
+
+            // Add this block just before glfwSwapBuffers(window):
+            ImGui_ImplOpenGL3_NewFrame();
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+
+            ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(280, 0), ImGuiCond_Always);
+            ImGui::SetNextWindowBgAlpha(0.75f);
+            ImGui::Begin("N-Body Controls", nullptr,
+                ImGuiWindowFlags_NoMove |
+                ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoCollapse);
+
+            ImGui::Text("Bodies: %d", NUM_BODIES);
+            ImGui::Separator();
+
+            ImGui::SliderFloat("G",         &simParams->g,         0.1f, 50.0f);
+            ImGui::SliderFloat("DT",        &simParams->dt,        0.01f, 5.0f);
+            ImGui::SliderFloat("Theta",     &simParams->theta,     0.1f, 1.5f);
+            ImGui::SliderFloat("Softening", &simParams->softening, 1.0f, 500.0f);
+
+            ImGui::Separator();
+            const char* distributions[] = { "Disk", "Uniform", "Sphere", "Ring" };
+            ImGui::Combo("Distribution", &simParams->distType, distributions, 4);
+
+            ImGui::Separator();
+            if (ImGui::Button("Restart Simulation", ImVec2(-1, 30)))
+                simParams->restart = true;
+
+            ImGui::Text("%.1f FPS", ImGui::GetIO().Framerate);
+            ImGui::End();
+
+            ImGui::Render();
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+            glfwSwapBuffers(window);
         }
 
-        glGenBuffers(1, &massVBO);
-        glBindBuffer(GL_ARRAY_BUFFER, massVBO);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * NUM_BODIES, nullptr, GL_STREAM_DRAW);
-
-        // VAO
-        glGenVertexArrays(1, &vao);
-        glBindVertexArray(vao);
-
-        // bind first buffer just to define layout
-        glBindBuffer(GL_ARRAY_BUFFER, vbo[0]);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, (void *)0);
-        glEnableVertexAttribArray(0);
-
-        glBindBuffer(GL_ARRAY_BUFFER, massVBO);
-        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 0, (void*)0);
-        glEnableVertexAttribArray(1);
-
-        glBindVertexArray(0);
-
-
-
-        // Shaders
-        std::string vertSrc = loadFile("shaders/shader.vert");
-        std::string fragSrc = loadFile("shaders/shader.frag");
-        program = createProgram(vertSrc, fragSrc);
-
-        glEnable(GL_PROGRAM_POINT_SIZE);
-        glEnable(GL_BLEND);
-        glDisable(GL_DEPTH_TEST);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-
-        auto loadTexture = [](const char* path) -> GLuint {
-            int w, h, ch;
-            // Flip vertically because OpenGL UV origin is bottom-left
-            stbi_set_flip_vertically_on_load(false);
-            unsigned char* data = stbi_load(path, &w, &h, &ch, 4); // force RGBA
-            if (!data) {
-                std::cerr << "Failed to load texture: " << path << std::endl;
-                return 0;
-            }
-            GLuint tex;
-            glGenTextures(1, &tex);
-            glBindTexture(GL_TEXTURE_2D, tex);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            stbi_image_free(data);
-            return tex;
-        };
-
-        spriteTexture = loadTexture("texture/spotlight_7.png");
-
-        std::cout << "OpenGL initialized" << std::endl;
-        std::cout << "Renderer: " << glGetString(GL_RENDERER) << std::endl;
-    }
-
-    void drawFrame()
-    {
-        int w, h;
-        glfwGetFramebufferSize(window, &w, &h);
-        glViewport(0, 0, w, h);
-        glClearColor(0, 0, 0, 1);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        float aspect = (float)w / (float)h;
-
-        glm::mat4 projection = glm::perspective(
-            glm::radians(45.0f), // Field of view
-            aspect,
-            100.0f,              // Near plane (increase this)
-            SPAWN_RANGE * 100.0f // Far plane
-        );
-
-        glm::vec3 direction;
-        direction.x = cos(camPitch) * sin(camYaw);
-        direction.y = sin(camPitch);
-        direction.z = -cos(camPitch) * cos(camYaw);
-
-        glm::vec3 position = camTarget - direction * camZoom;
-
-        glm::mat4 view = glm::lookAt(
-            position,
-            camTarget,
-            glm::vec3(0, 1, 0));
-
-        glUseProgram(program);
-        glUniformMatrix4fv(
-            glGetUniformLocation(program, "projection"),
-            1, GL_FALSE, glm::value_ptr(projection));
-
-        glUniformMatrix4fv(
-            glGetUniformLocation(program, "view"),
-            1, GL_FALSE, glm::value_ptr(view));
-
-        int drawBuf = 1 - current;
-
-        GLint blackHoleLoc = glGetUniformLocation(program, "blackHoleIndex");
-        glUniform1i(blackHoleLoc, 0);
-
-        glBindVertexArray(vao);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo[drawBuf]);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float)*3, (void*)0);
-
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, spriteTexture);
-        glUniform1i(glGetUniformLocation(program, "uSprite"), 0);
-
-        glDrawArrays(GL_POINTS, 0, NUM_BODIES);
-
-        glBindVertexArray(0);
-
-        glfwSwapBuffers(window);
-    }
-
-    void cleanup()
-    {
-        glDeleteBuffers(1, &vbo[0]);
-        glDeleteBuffers(1, &vbo[1]);
-        glDeleteVertexArrays(1, &vao);
-        glDeleteTextures(1, &spriteTexture);
-        glDeleteProgram(program);
-        glfwDestroyWindow(window);
-        glfwTerminate();
-    }
+        void cleanup()
+        {
+            glDeleteBuffers(1, &vbo[0]);
+            glDeleteBuffers(1, &vbo[1]);
+            glDeleteVertexArrays(1, &vao);
+            glDeleteTextures(1, &spriteTexture);
+            ImGui_ImplOpenGL3_Shutdown();
+            ImGui_ImplGlfw_Shutdown();
+            ImGui::DestroyContext();
+            glDeleteProgram(program);
+            glfwDestroyWindow(window);
+            glfwTerminate();
+        }
 };
 
 // ─── main ─────────────────────────────────────────────────────────────────────
+
+/*
+class Simulation
+{
+    public:
+    private:
+};
+*/
+
+
 
 int main()
 {
     srand(time(NULL));
 
-    Simulation sim;
+    SimParams params;
+    SimulationRender sim;
+    sim.simParams = &params;
     sim.init();
+
 
     // ── OpenCL platform/device ──────────────────────────────────────────────
     std::vector<cl::Platform> platforms;
@@ -756,6 +851,7 @@ int main()
 
 #pragma endregion    
 
+
     int maxComputeUnits = device.getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
 
     std::cout << "Max compute units:" << maxComputeUnits << std::endl;
@@ -773,6 +869,21 @@ int main()
     {
         try 
         {
+            if (params.restart)
+            {
+                params.restart = false;
+                 queue.finish(); 
+                // Re-generate bodies with current params
+                // (same init code as original, but use params.g etc.)
+                // Re-upload to GPU:
+                queue.enqueueWriteBuffer(buf_x,  CL_TRUE, 0, NUM_BODIES*sizeof(float), h_x.data());
+                queue.enqueueWriteBuffer(buf_y,  CL_TRUE, 0, NUM_BODIES*sizeof(float), h_y.data());
+                queue.enqueueWriteBuffer(buf_z,  CL_TRUE, 0, NUM_BODIES*sizeof(float), h_z.data());
+                queue.enqueueWriteBuffer(buf_vx, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_vx.data());
+                queue.enqueueWriteBuffer(buf_vy, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_vy.data());
+                queue.enqueueWriteBuffer(buf_vz, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_vz.data());
+                queue.enqueueWriteBuffer(buf_mass,CL_TRUE,0, NUM_BODIES*sizeof(float), h_mass.data());
+            }
             int zero = 0, one_val = 1;
             cl_int empty_val = -1;
             float mass_neg = -1.0f;
