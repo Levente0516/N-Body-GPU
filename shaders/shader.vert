@@ -18,7 +18,7 @@ void main()
     // Black hole gets a large bright point, stars scale with mass
     if (gl_VertexID == blackHoleIndex)
     {
-        gl_PointSize = 100.0;
+        gl_PointSize = 500.0;
     }
     else
     {

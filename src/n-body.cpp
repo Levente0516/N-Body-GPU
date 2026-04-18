@@ -437,16 +437,15 @@ class SimulationRender
             ImGui::NewFrame();
 
             ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
-            ImGui::SetNextWindowSize(ImVec2(280, 0), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(375, 0), ImGuiCond_Always);
             ImGui::SetNextWindowBgAlpha(0.75f);
             ImGui::Begin("N-Body Controls", nullptr,
                 ImGuiWindowFlags_NoMove |
-                ImGuiWindowFlags_NoResize |
-                ImGuiWindowFlags_NoCollapse);
+                ImGuiWindowFlags_NoResize);
 
             ImGui::Text("Bodies: %d", NUM_BODIES);
             ImGui::Separator();
-
+            
             ImGui::SliderFloat("G",         &simParams->g,         0.1f, 50.0f);
             ImGui::SliderFloat("DT",        &simParams->dt,        0.01f, 5.0f);
             ImGui::SliderFloat("Theta",     &simParams->theta,     0.1f, 1.5f);
@@ -455,6 +454,10 @@ class SimulationRender
             ImGui::Separator();
             const char* distributions[] = { "Disk", "Uniform", "Sphere", "Ring" };
             ImGui::Combo("Distribution", &simParams->distType, distributions, 4);
+
+            ImGui::Separator();
+            const char* powersOfTwo[] = { "2", "4", "8", "16", "32", "64", "128", "256", "512", "1024", "2048", "4096", "8192", "16384", "32768"};
+            ImGui::Combo("Number of bodies", &simParams->numBodies, powersOfTwo, 15);
 
             ImGui::Separator();
             if (ImGui::Button("Restart Simulation", ImVec2(-1, 30)))
@@ -486,15 +489,6 @@ class SimulationRender
 
 // ─── main ─────────────────────────────────────────────────────────────────────
 
-/*
-class Simulation
-{
-    public:
-    private:
-};
-*/
-
-
 
 int main()
 {
@@ -505,9 +499,7 @@ int main()
     sim.simParams = &params;
     sim.init();
 
-
-    // ── OpenCL platform/device ──────────────────────────────────────────────
-    std::vector<cl::Platform> platforms;
+    std::vector<cl::Platform> platforms; //-
     cl::Platform::get(&platforms);
 
     // 2. Find a platform that supports at least 2.1
@@ -696,7 +688,6 @@ int main()
     // ── Init bodies ─────────────────────────────────────────────────────────
     std::vector<float> h_x(NUM_BODIES), h_y(NUM_BODIES), h_z(NUM_BODIES);
     std::vector<float> h_vx(NUM_BODIES), h_vy(NUM_BODIES), h_vz(NUM_BODIES);
-    std::vector<float> h_fx(NUM_BODIES), h_fy(NUM_BODIES), h_fz(NUM_BODIES);
     std::vector<float> h_mass(NUM_BODIES);
 
     // Optional blackhole xd
