@@ -65,7 +65,7 @@ __kernel void forceKernel(
 
                 f = G * mass[c] * invD * invD * invD;
 
-
+                f *= 100;
 
                 ax += dx * f; 
                 ay += dy * f; 
@@ -77,6 +77,7 @@ __kernel void forceKernel(
                 {
                     f = G * mass[c] * invD * invD * invD;
 
+                    f *= 100;
                     
                     ax += dx * f; 
                     ay += dy * f; 
@@ -89,8 +90,6 @@ __kernel void forceKernel(
             }
         }
     }
-
-
 
     accX[si] = ax;
     accY[si] = ay;

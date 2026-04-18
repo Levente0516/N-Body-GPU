@@ -38,29 +38,18 @@
 const int NUM_BODIES = 32768; //131072 //32768 //
 const int THREADS = 64;
 const int WARPSIZE = 64;
-const float SPAWN_RANGE = 200000.0f;
-const float THETA = 0.5f;
-const float G = 5.0f;
-const float SOFTENING = 50.0f;
-const float DT = 0.5f;
-const int CAMERAZOOM = 2;
+const float SPAWN_RANGE = 100000.0f;
+const int CAMERAZOOM = 1;
 const int MAXDEPTH = 64;
-
-enum class DistributionType
-{
-    UNIFORM,
-    DISK,
-    SPHERE,
-    GAUSSIAN,
-    RING
-};
 
 struct SimParams {
     float g          = 5.0f;
     float dt         = 1.0f;
     float theta      = 0.5f;
     float softening  = 50.0f;
-    int   numBodies  = 32768;
+    int   numBodies  = 32768; //TODO delete the const and pass this everywhere
+    float bhMass = 2e8f;
+    int spawnRange = SPAWN_RANGE;
     int   distType   = 0;  // 0=disk, 1=uniform, 2=sphere, 3=ring
     bool  restart    = false;
 };
@@ -156,9 +145,12 @@ class SimulationRender
         GLuint massVBO;
 
         SimParams* simParams = nullptr; 
+        int* current   = nullptr; 
 
-        void init()
+        void init(SimParams* p, int* cur)
         {
+            simParams = p;
+            current = cur;
             initWindow();
             initGL();
         }
@@ -414,7 +406,7 @@ class SimulationRender
                 glGetUniformLocation(program, "view"),
                 1, GL_FALSE, glm::value_ptr(view));
 
-            int drawBuf = 1 - current;
+            int drawBuf = 1 - *current;
 
             GLint blackHoleLoc = glGetUniformLocation(program, "blackHoleIndex");
             glUniform1i(blackHoleLoc, 0);
@@ -489,446 +481,499 @@ class SimulationRender
 
 // ─── main ─────────────────────────────────────────────────────────────────────
 
+class Simulation
+{
+    public:
+
+        int numNodes = 0;
+        int current = 0;
+
+        std::vector<float> h_x, h_y, h_z;
+        std::vector<float> h_vx, h_vy, h_vz;
+        std::vector<float> h_mass;
+
+        void init(SimulationRender& render, SimParams& p)
+        {
+            numNodes = calcNumNodes();
+            initOpenGl(render);
+            buildKernels(p);
+            allocateBuffers();
+            generateBodies(p);
+            uploadBodies();
+            setKernelArgs();
+            initNDRanges();
+        }
+
+        void step(SimulationRender& render, SimParams& p)
+        {
+            if (p.restart) 
+            {
+                p.restart = false;
+                queue.finish();
+                buildKernels(p);  
+                setKernelArgs();   
+                initNDRanges();
+                generateBodies(p);
+                uploadBodies();
+
+                glBindBuffer(GL_ARRAY_BUFFER, render.getMassVBO());
+                glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(float)*NUM_BODIES, h_mass.data());
+            }
+
+            try 
+            {
+                int zero = 0, one_val = 1;
+                cl_int empty_val = -1;
+                float mass_neg = -1.0f;
+                cl_float zero_f = 0.0f;
+
+                queue.enqueueWriteBuffer(buf_blockCount, CL_FALSE, 0, sizeof(int), &zero);
+                queue.enqueueWriteBuffer(buf_maxDepth,   CL_FALSE, 0, sizeof(int), &one_val);
+                
+                queue.enqueueFillBuffer(buf_accX, zero_f, 0, NUM_BODIES * sizeof(cl_float));
+                queue.enqueueFillBuffer(buf_accY, zero_f, 0, NUM_BODIES * sizeof(cl_float));
+                queue.enqueueFillBuffer(buf_accZ, zero_f, 0, NUM_BODIES * sizeof(cl_float));
+                queue.enqueueFillBuffer(buf_child, empty_val, 0, sizeof(cl_int) * 8 * (numNodes + 1));
+                queue.enqueueFillBuffer(buf_start, empty_val, 0, sizeof(cl_int) * (numNodes + 1));
+                queue.enqueueFillBuffer(buf_mass, mass_neg, sizeof(float) * NUM_BODIES, sizeof(float) * (numNodes + 1 - NUM_BODIES));
+
+
+                int writeBuf = current;
+                std::vector<cl::Memory> shared = { buf_pos_gl[writeBuf] };
+                writePositionsKernel.setArg(3, buf_pos_gl[writeBuf]);
+
+
+                queue.enqueueNDRangeKernel(boundingBoxKernel, cl::NullRange, global, local);
+                queue.enqueueBarrierWithWaitList();
+                
+                queue.enqueueNDRangeKernel(buildTreeKernel, cl::NullRange, safe, local);
+                queue.enqueueBarrierWithWaitList();
+                
+                queue.enqueueNDRangeKernel(sumInfoKernel, cl::NullRange, local, local);
+                queue.enqueueBarrierWithWaitList();
+
+                queue.enqueueNDRangeKernel(sortKernel, cl::NullRange, local, local);
+                queue.enqueueBarrierWithWaitList();
+                
+                queue.enqueueNDRangeKernel(forceKernel, cl::NullRange, global, local);
+                queue.enqueueBarrierWithWaitList();
+                
+                
+                queue.enqueueNDRangeKernel(integrateKernel, cl::NullRange, global, local);
+                queue.enqueueBarrierWithWaitList();
+
+                queue.enqueueAcquireGLObjects(&shared);
+                queue.enqueueNDRangeKernel(writePositionsKernel, cl::NullRange, global, local);
+                queue.enqueueReleaseGLObjects(&shared);
+
+                queue.flush();
+
+                current = 1 - current;
+            }
+            catch (cl::Error& e) {
+                std::cerr << "OpenCL error: " << e.what() << " (" << e.err() << ")\n";
+                exit(1);
+            }
+        }
+
+    private:
+
+        cl::Context      context;
+        cl::CommandQueue queue;
+        cl::Program      program;
+        cl::Device       device;
+
+        cl::Kernel boundingBoxKernel, buildTreeKernel, sumInfoKernel;
+        cl::Kernel sortKernel, forceKernel, integrateKernel, writePositionsKernel;
+
+        cl::Buffer buf_x, buf_y, buf_z;
+        cl::Buffer buf_vx, buf_vy, buf_vz;
+        cl::Buffer buf_accX, buf_accY, buf_accZ;
+        cl::Buffer buf_mass, buf_nodeSize, buf_nodeCount;
+        cl::Buffer buf_child, buf_start, buf_sorted;
+        cl::Buffer buf_blockCount, buf_bottom, buf_numNodes, buf_maxDepth, buf_step;
+        cl::Buffer buf_minX, buf_minY, buf_minZ, buf_maxX, buf_maxY, buf_maxZ;
+        cl::BufferGL buf_pos_gl[2];
+
+        cl::NDRange global, safe, local;
+
+        void initOpenGl(SimulationRender& render)
+        {
+            std::vector<cl::Platform> platforms;
+
+            cl::Platform::get(&platforms);
+            
+            if (platforms.empty())
+            {
+                throw std::runtime_error("No OpenCL platforms");
+            }
+
+            auto it = std::find_if(platforms.begin(), platforms.end(), [](const cl::Platform& p)
+            {
+                std::string v = p.getInfo<CL_PLATFORM_VERSION>();
+
+                return v.find("2.1") != std::string::npos || v.find("2.0") != std::string::npos;
+            });
+
+            if (it == platforms.end())
+            {
+                it = platforms.begin();
+            } 
+            
+            cl::Platform platform = *it;
+
+            std::vector<cl::Device> devices;
+            
+            platform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
+            
+            if (devices.empty())
+            {
+                throw std::runtime_error("No GPU devices");
+            } 
+            
+            device = devices[0];
+
+            std::string exts = device.getInfo<CL_DEVICE_EXTENSIONS>();
+            
+            bool hasSharing  = exts.find("cl_khr_gl_sharing") != std::string::npos;
+
+            std::cout << "Platform: "  << platform.getInfo<CL_PLATFORM_NAME>()    << "\n";
+            std::cout << "Device:   "  << device.getInfo<CL_DEVICE_NAME>()        << "\n";
+            std::cout << "GL sharing: "<< (hasSharing ? "YES" : "NO")             << "\n";
+            std::cout << "Compute units: " << device.getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>() << "\n";
+
+            cl_context_properties props[] = {
+                CL_CONTEXT_PLATFORM, (cl_context_properties)platform(),
+                CL_GL_CONTEXT_KHR,   (cl_context_properties)wglGetCurrentContext(),
+                CL_WGL_HDC_KHR,      (cl_context_properties)wglGetCurrentDC(),
+                0
+            };
+            
+            context = hasSharing ? cl::Context(device, props) : cl::Context(device);
+            
+            queue   = cl::CommandQueue(context, device);
+
+            if (hasSharing)
+            {
+                try 
+                {
+                    for (int i = 0; i < 2; i++)
+                    {
+                        buf_pos_gl[i] = cl::BufferGL(context, CL_MEM_READ_WRITE, render.getVBO(i));
+                    }
+                    
+                    std::cout << "GL interop: active\n";
+                } 
+                catch (...) 
+                {
+                    std::cerr << "BufferGL failed\n"; exit(1);
+                }
+            } 
+            else
+            {
+                std::cerr << "No GL sharing — cannot continue\n"; exit(1);
+            }
+        }
+
+        void buildKernels(const SimParams& p)
+        {
+            std::string kernelSrc = 
+                loadFile("kernels/boundingbox.cl") +
+                loadFile("kernels/buildtree.cl") +
+                loadFile("kernels/suminfo.cl") +
+                loadFile("kernels/sort.cl") +
+                loadFile("kernels/force.cl") +
+                loadFile("kernels/integration.cl") +
+                loadFile("kernels/writepos.cl");
+
+            cl::Program::Sources sources;
+            sources.push_back(kernelSrc);
+
+            std::string opts =
+                std::string("-cl-mad-enable") +
+                " -D NUMBER_OF_NODES=" + std::to_string(numNodes) +
+                " -D THREADS="         + std::to_string(THREADS)  +
+                " -D WARPSIZE="        + std::to_string(WARPSIZE) +
+                " -D NUM_BODIES="      + std::to_string(p.numBodies) +
+                " -D DT="              + std::to_string(p.dt)       +
+                " -D SOFTENING="       + std::to_string(p.softening)+
+                " -D G="               + std::to_string(p.g)        +
+                " -D THETA="           + std::to_string(p.theta);
+            
+            program = cl::Program(context, sources);
+
+            try 
+            { 
+                program.build({device}, opts.c_str());
+            }
+            catch (const cl::Error&)
+            {
+                std::cerr << "Build error:\n" << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device) << "\n";
+                exit(1);
+            }
+
+            boundingBoxKernel = cl::Kernel(program, "boundingBoxKernel");
+            buildTreeKernel = cl::Kernel(program, "buildTreeKernel");
+            sumInfoKernel = cl::Kernel(program, "summarizeTreeKernel");
+            sortKernel = cl::Kernel(program, "sortKernel");
+            forceKernel = cl::Kernel(program, "forceKernel");
+            integrateKernel = cl::Kernel(program, "integrateKernel");
+            writePositionsKernel = cl::Kernel(program, "writePositionsInterleaved");
+
+            std::cout << "Kernels compiled\n";
+        }
+
+        void allocateBuffers()
+        {
+            buf_x         = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (numNodes+1));
+            buf_y         = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (numNodes+1));
+            buf_z         = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (numNodes+1));
+            buf_mass      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (numNodes+1));
+            buf_nodeSize  = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (numNodes+1));
+            buf_nodeCount = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * (numNodes+1));
+            buf_vx        = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
+            buf_vy        = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
+            buf_vz        = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
+            buf_accX      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
+            buf_accY      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
+            buf_accZ      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
+            buf_sorted    = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * (numNodes+1));
+            buf_minX      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
+            buf_minY      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
+            buf_minZ      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
+            buf_maxX      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
+            buf_maxY      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
+            buf_maxZ      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
+
+            int v0 = 0;
+            int v1 = 1; 
+            int vm1 = -1;
+            std::vector<int> child(8 * (numNodes + 1), 0);
+            std::vector<int> start((numNodes + 1), 0);
+            buf_child     = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int) * (8*(numNodes+1)), child.data());
+            buf_start     = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int) * (numNodes+1), start.data());
+            buf_blockCount = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &v0);
+            buf_bottom     = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &v0);
+            buf_numNodes   = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &numNodes);
+            buf_maxDepth   = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &v1);
+            buf_step       = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &vm1);
+
+            std::cout << "Buffers allocated. numNodes=" << numNodes << "\n";
+        }
+
+        void setKernelArgs()
+        {
+            boundingBoxKernel.setArg( 0, buf_step);
+            boundingBoxKernel.setArg( 1, buf_x);
+            boundingBoxKernel.setArg( 2, buf_y);
+            boundingBoxKernel.setArg( 3, buf_z);
+            boundingBoxKernel.setArg( 4, buf_blockCount);
+            boundingBoxKernel.setArg( 5, buf_bottom);
+            boundingBoxKernel.setArg( 6, buf_mass);
+            boundingBoxKernel.setArg( 7, buf_numNodes);
+            boundingBoxKernel.setArg( 8, buf_minX);
+            boundingBoxKernel.setArg( 9, buf_minY);
+            boundingBoxKernel.setArg(10, buf_minZ);
+            boundingBoxKernel.setArg(11, buf_maxX);
+            boundingBoxKernel.setArg(12, buf_maxY);
+            boundingBoxKernel.setArg(13, buf_maxZ);
+            boundingBoxKernel.setArg(14, buf_child);
+            boundingBoxKernel.setArg(15, buf_start);
+            boundingBoxKernel.setArg(16, buf_nodeSize);
+            boundingBoxKernel.setArg(17, buf_maxDepth);
+
+            buildTreeKernel.setArg(0, buf_x);
+            buildTreeKernel.setArg(1, buf_y);
+            buildTreeKernel.setArg(2, buf_z);
+            buildTreeKernel.setArg(3, buf_mass);
+            buildTreeKernel.setArg(4, buf_child);
+            buildTreeKernel.setArg(5, buf_start);
+            buildTreeKernel.setArg(6, buf_nodeSize);
+            buildTreeKernel.setArg(7, buf_bottom);
+            buildTreeKernel.setArg(8, buf_maxDepth);
+
+            sumInfoKernel.setArg(0, buf_x);
+            sumInfoKernel.setArg(1, buf_y);
+            sumInfoKernel.setArg(2, buf_z);
+            sumInfoKernel.setArg(3, buf_mass);
+            sumInfoKernel.setArg(4, buf_child);
+            sumInfoKernel.setArg(5, buf_nodeCount);
+            sumInfoKernel.setArg(6, buf_bottom);
+
+            sortKernel.setArg(0, buf_child);
+            sortKernel.setArg(1, buf_nodeCount);
+            sortKernel.setArg(2, buf_start);
+            sortKernel.setArg(3, buf_sorted);
+            sortKernel.setArg(4, buf_bottom);
+            sortKernel.setArg(5, buf_numNodes);
+
+            forceKernel.setArg( 0, buf_x);
+            forceKernel.setArg( 1, buf_y);
+            forceKernel.setArg( 2, buf_z);
+            forceKernel.setArg( 3, buf_mass);
+            forceKernel.setArg( 4, buf_child);
+            forceKernel.setArg( 5, buf_nodeSize);
+            forceKernel.setArg( 6, buf_sorted);
+            forceKernel.setArg( 7, buf_accX);
+            forceKernel.setArg( 8, buf_accY);
+            forceKernel.setArg( 9, buf_accZ);
+            forceKernel.setArg(10, buf_numNodes);
+
+            integrateKernel.setArg(0, buf_x);
+            integrateKernel.setArg(1, buf_y);
+            integrateKernel.setArg(2, buf_z);
+            integrateKernel.setArg(3, buf_vx);
+            integrateKernel.setArg(4, buf_vy);
+            integrateKernel.setArg(5, buf_vz);
+            integrateKernel.setArg(6, buf_accX);
+            integrateKernel.setArg(7, buf_accY);
+            integrateKernel.setArg(8, buf_accZ);
+
+            writePositionsKernel.setArg(0, buf_x);
+            writePositionsKernel.setArg(1, buf_y);
+            writePositionsKernel.setArg(2, buf_z);
+        }
+        
+        void initNDRanges()
+        {
+            int maxComputeUnits = device.getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
+            global = cl::NDRange(NUM_BODIES);
+            safe = cl::NDRange(maxComputeUnits * THREADS);
+            local = cl::NDRange(THREADS);
+        }
+
+        void generateBodies(const SimParams& p)
+        {
+            h_x.resize(NUM_BODIES); 
+            h_y.resize(NUM_BODIES); 
+            h_z.resize(NUM_BODIES);
+            h_vx.resize(NUM_BODIES); 
+            h_vy.resize(NUM_BODIES);
+            h_vz.resize(NUM_BODIES);
+            h_mass.resize(NUM_BODIES);
+
+            h_x[0] = h_y[0] = h_z[0] = 0.0f;
+            h_vx[0] = h_vy[0] = h_vz[0] = 0.0f;
+            h_mass[0] = p.bhMass;
+
+            for (int i = 1; i < NUM_BODIES; i++) 
+            {
+                float f = std::pow((float)rand()/RAND_MAX, 2.0f);
+                h_mass[i] = 5000.0f + f * 50000.0f;
+            }
+
+            switch (p.distType) 
+            {
+                case 0: generateDisk(p);    break;
+                case 1: generateUniform(p); break;
+                case 2: generateSphere(p);  break;
+                default: generateDisk(p);   break;
+            }
+
+            //std::cout << "Bodies generated (distribution = " << p.distType << ")\n";
+        }
+
+        void generateDisk(const SimParams& p)
+        {
+            for (int i = 1; i < NUM_BODIES; i++) 
+            {
+                float angle  = ((float)rand()/RAND_MAX) * 2.0f * (float)M_PI;
+                float u      = (float)rand()/RAND_MAX;
+                float radius = std::sqrt(u) * p.spawnRange;
+
+                h_x[i] = radius * std::cos(angle);
+                h_y[i] = radius * std::sin(angle);
+                h_z[i] = ((float)rand()/RAND_MAX - 0.5f) * 0.1f * p.spawnRange;
+
+                float r = std::max(std::sqrt(h_x[i]*h_x[i] + h_y[i]*h_y[i]), 1.0f);
+                float v = std::sqrt(p.g * p.bhMass / r);
+                h_vx[i] =  std::sin(angle) * v;
+                h_vy[i] = -std::cos(angle) * v;
+                h_vz[i] = 0.0f;
+            }
+        }
+
+        void generateUniform(const SimParams& p)
+        {
+            for (int i = 1; i < NUM_BODIES; i++) {
+                h_x[i] = ((float)rand()/RAND_MAX - 0.5f) * p.spawnRange;
+                h_y[i] = ((float)rand()/RAND_MAX - 0.5f) * p.spawnRange;
+                h_z[i] = ((float)rand()/RAND_MAX - 0.5f) * p.spawnRange;
+                h_vx[i] = h_vy[i] = h_vz[i] = 0.0f;
+            }
+        }
+
+        void generateSphere(const SimParams& p)
+        {
+            for (int i = 1; i < NUM_BODIES; i++) {
+                float u = (float)rand()/RAND_MAX;
+                float v = (float)rand()/RAND_MAX;
+                float theta = 2.0f * (float)M_PI * u;
+                float phi   = std::acos(2.0f * v - 1.0f);
+                float r     = std::cbrt((float)rand()/RAND_MAX) * p.spawnRange;
+                h_x[i] = r * std::sin(phi) * std::cos(theta);
+                h_y[i] = r * std::sin(phi) * std::sin(theta);
+                h_z[i] = r * std::cos(phi);
+                // Tangential velocity for rough orbital motion
+                float rl = std::max(std::sqrt(h_x[i]*h_x[i] + h_y[i]*h_y[i]), 1.0f);
+                float vt = std::sqrt(p.g * p.bhMass / rl) * 0.7f;
+                h_vx[i] =  h_y[i] / rl * vt;
+                h_vy[i] = -h_x[i] / rl * vt;
+                h_vz[i] = 0.0f;
+            }
+        }
+
+        void uploadBodies()
+        {
+            auto up = [&](cl::Buffer& b, const std::vector<float>& v) 
+            {
+                queue.enqueueWriteBuffer(b, CL_TRUE, 0, NUM_BODIES*sizeof(float), v.data());
+            };
+
+            up(buf_x, h_x); 
+            up(buf_y, h_y); 
+            up(buf_z, h_z);
+            up(buf_vx, h_vx); 
+            up(buf_vy, h_vy); 
+            up(buf_vz, h_vz);
+            up(buf_mass, h_mass);
+
+            std::vector<int> sorted(numNodes+1, 0);
+            for (int i = 0; i < NUM_BODIES; i++)
+            {
+                sorted[i] = i;
+            }
+
+            queue.enqueueWriteBuffer(buf_sorted, CL_TRUE, 0, (numNodes+1)*sizeof(int), sorted.data());
+
+            std::vector<float> zeros(NUM_BODIES, 0.0f);
+            queue.enqueueWriteBuffer(buf_accX, CL_TRUE, 0, NUM_BODIES*sizeof(float), zeros.data());
+            queue.enqueueWriteBuffer(buf_accY, CL_TRUE, 0, NUM_BODIES*sizeof(float), zeros.data());
+            queue.enqueueWriteBuffer(buf_accZ, CL_TRUE, 0, NUM_BODIES*sizeof(float), zeros.data());
+
+            queue.finish();
+        }
+};
+
 
 int main()
 {
-    srand(time(NULL));
+    srand((unsigned)time(nullptr));
 
     SimParams params;
-    SimulationRender sim;
-    sim.simParams = &params;
-    sim.init();
+    SimulationRender render;
+    Simulation sim;
 
-    std::vector<cl::Platform> platforms; //-
-    cl::Platform::get(&platforms);
+    render.init(&params, &sim.current);
+    sim.init(render, params);
 
-    // 2. Find a platform that supports at least 2.1
-    auto platIt = std::find_if(platforms.begin(), platforms.end(),
-        [](const cl::Platform& p) {
-            std::string version = p.getInfo<CL_PLATFORM_VERSION>();
-            // This checks if "2.1" or "3.0" is present
-            return version.find("OpenCL 2.1") != std::string::npos || 
-                version.find("OpenCL 2.0") != std::string::npos;
-        });
+    glBindBuffer(GL_ARRAY_BUFFER, render.getMassVBO());
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(float)*NUM_BODIES, sim.h_mass.data());
 
-    if (platIt == platforms.end()) {
-        // If we didn't find 2.1, just take the first one available
-        if (platforms.empty()) throw std::runtime_error("No OpenCL platforms found.");
-        platIt = platforms.begin();
-    }
-
-    // 3. Set it as default so cl::Context::getDefault() works
-    cl::Platform::setDefault(*platIt);
-
-    // 4. Verification print
-    std::cout << "Platform: " << platIt->getInfo<CL_PLATFORM_NAME>() << "\n";
-    std::cout << "Version:  " << platIt->getInfo<CL_PLATFORM_VERSION>() << "\n";
-
-    std::vector<cl::Device> devices;
-    platforms[0].getDevices(CL_DEVICE_TYPE_GPU, &devices);
-    cl::Device device = devices[0];
-
-    std::cout << "Using device: " << device.getInfo<CL_DEVICE_NAME>() << std::endl;
-    std::string exts = device.getInfo<CL_DEVICE_EXTENSIONS>();
-    bool hasGLSharing = exts.find("cl_khr_gl_sharing") != std::string::npos;
-    std::cout << "cl_khr_gl_sharng: " << (hasGLSharing ? "YES" : "NO") << std::endl;
-
-    // ── Create OpenCL context sharing with OpenGL ───────────────────────────
-    cl_context_properties props[] = {
-        CL_CONTEXT_PLATFORM, (cl_context_properties)platforms[0](),
-        CL_GL_CONTEXT_KHR, (cl_context_properties)wglGetCurrentContext(),
-        CL_WGL_HDC_KHR, (cl_context_properties)wglGetCurrentDC(),
-        0};
-
-    cl::Context context;
-    if (hasGLSharing)
-    {
-        context = cl::Context(device, props);
-        std::cout << "OpenCL context created with OpenGL sharing" << std::endl;
-    }
-    else
-    {
-        context = cl::Context(device);
-        std::cout << "WARNING: No GL sharing — falling back to readbak" << std::endl;
-    }
-
-    cl::CommandQueue queue(context, device);
-
-    // ── Build kernels ───────────────────────────────────────────────────────
-
-    std::string kernelSrc = loadFile("kernels/boundingbox.cl") +
-                            loadFile("kernels/buildtree.cl") +
-                            loadFile("kernels/suminfo.cl") +
-                            loadFile("kernels/sort.cl") +
-                            loadFile("kernels/force.cl") +
-                            loadFile("kernels/integration.cl") +
-                            loadFile("kernels/writepos.cl");
-
-    cl::Program::Sources sources;
-    sources.push_back(kernelSrc);
-
-    int numNodes = calcNumNodes();
-
-    std::string buildOptions = std::string("-cl-mad-enable ") +
-                                " -D NUMBER_OF_NODES=" + std::to_string(numNodes) +
-                                " -D THREADS=" + std::to_string(THREADS) +
-                                " -D WARPSIZE=" + std::to_string(WARPSIZE) +
-                                " -D NUM_BODIES=" + std::to_string(NUM_BODIES) +
-                                " -D DT=" + std::to_string(DT) +
-                                " -D SOFTENING=" + std::to_string(SOFTENING) +
-                                " -D G=" + std::to_string(G) +
-                                " -D THETA=" + std::to_string(THETA);
-
-    cl::Program program(context, sources);
-    try
-    {
-        program.build({device}, buildOptions.c_str());
-    }
-    catch (const cl::Error &)
-    {
-        std::cerr << "Build error:\n"
-                  << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device) << std::endl;
-        return 1;
-    }
-
-    cl::Kernel boundingBoxKernel  (program, "boundingBoxKernel");
-    cl::Kernel buildTreeKernel    (program, "buildTreeKernel");
-    cl::Kernel sumInfoKernel(program, "summarizeTreeKernel");
-    cl::Kernel sortKernel         (program, "sortKernel");
-    cl::Kernel forceKernel        (program, "forceKernel");
-    cl::Kernel integrateKernel    (program, "integrateKernel");
-    cl::Kernel writePositionsKernel(program, "writePositionsInterleaved");
-
-    // ── OpenCL buffers ──────────────────────────────────────────────────────
-
-    std::cout << "Num nodes:" << numNodes << std::endl;
-
-    cl::Buffer buf_x(context, CL_MEM_READ_WRITE, (numNodes+1) * sizeof(float));
-    cl::Buffer buf_y(context, CL_MEM_READ_WRITE, (numNodes+1) * sizeof(float));
-    cl::Buffer buf_z(context, CL_MEM_READ_WRITE, (numNodes+1) * sizeof(float));
-
-    cl::Buffer buf_vx(context, CL_MEM_READ_WRITE, NUM_BODIES * sizeof(float));
-    cl::Buffer buf_vy(context, CL_MEM_READ_WRITE, NUM_BODIES * sizeof(float));
-    cl::Buffer buf_vz(context, CL_MEM_READ_WRITE, NUM_BODIES * sizeof(float));
-
-    cl::Buffer buf_accX(context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
-    cl::Buffer buf_accY(context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
-    cl::Buffer buf_accZ(context, CL_MEM_READ_WRITE, NUM_BODIES*sizeof(float));
-
-    cl::Buffer buf_mass(context, CL_MEM_READ_WRITE, (numNodes+1) * sizeof(float));
-
-    cl::Buffer buf_nodeSize(context, CL_MEM_READ_WRITE, (numNodes+1) * sizeof(float));
-    cl::Buffer buf_nodeCount(context, CL_MEM_READ_WRITE, (numNodes+1) * sizeof(int));
-
-    cl::Buffer buf_nextNode(context, CL_MEM_READ_WRITE, sizeof(int));
-
-    int blockCount = 0;
-    int maxD = 1;
-    int bottomInit = 0;
-
-    cl::Buffer buf_blockCount(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &blockCount);
-    cl::Buffer buf_bottom    (context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &bottomInit);
-    cl::Buffer buf_numNodes  (context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &numNodes);
-    cl::Buffer buf_maxDepth  (context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &maxD);
-
-    cl::Buffer buf_minX(context, CL_MEM_READ_WRITE, NUM_BODIES * sizeof(float));
-    cl::Buffer buf_minY(context, CL_MEM_READ_WRITE, NUM_BODIES * sizeof(float));
-    cl::Buffer buf_minZ(context, CL_MEM_READ_WRITE, NUM_BODIES * sizeof(float));
-
-    cl::Buffer buf_maxX(context, CL_MEM_READ_WRITE, NUM_BODIES * sizeof(float));
-    cl::Buffer buf_maxY(context, CL_MEM_READ_WRITE, NUM_BODIES * sizeof(float));
-    cl::Buffer buf_maxZ(context, CL_MEM_READ_WRITE, NUM_BODIES * sizeof(float));
-
-    std::vector<int> child(8 * (numNodes + 1), 0);
-    std::vector<int> start((numNodes + 1), 0);
-    //std::vector<int> h_sorted(numNodes + 1, 0);
-
-
-    cl::Buffer buf_sorted(context, CL_MEM_READ_WRITE, (numNodes+1)*sizeof(int));
-
-    int step = -1;
-    int zero = 0;
-
-    cl::Buffer buf_child(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int) * child.size(), child.data());
-    cl::Buffer buf_start(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int) * start.size(), start.data());
-    cl::Buffer buf_step(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &step);
-
-    cl::Buffer buf_errorFlag(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &zero);
-
-    cl::Buffer buf_ready(context, CL_MEM_READ_WRITE, sizeof(int) * (numNodes + 1));
-
-    // ── Shared VBO buffer ───────────────────────────────────────────────────
-    cl::BufferGL buf_pos_gl[2];
-    cl::Buffer buf_pos_fallback;
-    bool usingGLSharing = false;
-
-    if (hasGLSharing)
-    {
-        try
-        {
-            for (int i = 0; i < 2; i++)
-            {
-                buf_pos_gl[i] = cl::BufferGL(context, CL_MEM_READ_WRITE, sim.getVBO(i));
-            }
-            usingGLSharing = true;
-            std::cout << "Shared OpenCL-OpenGL VBO created — true GPU interop active" << std::endl;
-        }
-        catch (...)
-        {
-            std::cerr << "BufferGL creation failed — falling back to readback" << std::endl;
-        }
-    }
-
-    if (!usingGLSharing)
-    {
-        buf_pos_fallback = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * 3 * NUM_BODIES);
-        std::cout << "Using fallback readback pat" << std::endl;
-    }
-
-    // ── Init bodies ─────────────────────────────────────────────────────────
-    std::vector<float> h_x(NUM_BODIES), h_y(NUM_BODIES), h_z(NUM_BODIES);
-    std::vector<float> h_vx(NUM_BODIES), h_vy(NUM_BODIES), h_vz(NUM_BODIES);
-    std::vector<float> h_mass(NUM_BODIES);
-
-    // Optional blackhole xd
-
-    h_x[0] = 0;
-    h_y[0] = 0;
-    h_z[0] = 0;
-    h_mass[0] = 1e6f;
-    h_vx[0] = 0.0f;
-    h_vy[0] = 0.0f;
-    h_vz[0] = 0.0f;
-
-    float totalSystemMass = 0.00f;
-
-    for (int i = 1; i < NUM_BODIES; i++)
-    {
-        float massFactor = pow(((float)rand() / RAND_MAX), 2.0f);
-        h_mass[i] = 5000.0f + massFactor * 50000.0f;
-        totalSystemMass += h_mass[i];
-    }
-
-    for (int i = 1; i < NUM_BODIES; i++)
-    {
-        float angle = ((float)rand() / RAND_MAX) * 2.0f * M_PI;
-        float u = (float)rand() / RAND_MAX;
-        float radius = sqrt(u) * SPAWN_RANGE;
-
-        float z = ((float)rand() / RAND_MAX - 0.5f) * 0.1f * (SPAWN_RANGE);
-
-        h_x[i] = radius * cos(angle);
-        h_y[i] = radius * sin(angle);
-        h_z[i] = z;
-
-        float bhMass = h_mass[0]; // 1e21
-
-        float r = sqrt(h_x[i] * h_x[i] + h_y[i] * h_y[i]);
-        if (r < 1.0f)
-        {
-            r = 1.0f;
-        }
-
-        float enclosedMass = bhMass;
-
-        float orbitalVelocity = sqrt(G * enclosedMass / r);
-
-        h_vx[i] = sin(angle) * orbitalVelocity;
-        h_vy[i] = -cos(angle) * orbitalVelocity;
-        h_vz[i] = 0.0f;
-
-        //h_vx[i] = 0.0f;
-        //h_vy[i] = 0.0f;
-    }
-
-    queue.enqueueWriteBuffer(buf_x, CL_TRUE, 0, NUM_BODIES * sizeof(float), h_x.data());
-    queue.enqueueWriteBuffer(buf_y, CL_TRUE, 0, NUM_BODIES * sizeof(float), h_y.data());
-    queue.enqueueWriteBuffer(buf_z, CL_TRUE, 0, NUM_BODIES * sizeof(float), h_z.data());
-    queue.enqueueWriteBuffer(buf_vx, CL_TRUE, 0, NUM_BODIES * sizeof(float), h_vx.data());
-    queue.enqueueWriteBuffer(buf_vy, CL_TRUE, 0, NUM_BODIES * sizeof(float), h_vy.data());
-    queue.enqueueWriteBuffer(buf_vz, CL_TRUE, 0, NUM_BODIES * sizeof(float), h_vz.data());
-    queue.enqueueWriteBuffer(buf_mass, CL_TRUE, 0, NUM_BODIES * sizeof(float), h_mass.data());
-
-    std::vector<int> h_sorted(numNodes + 1, 0);
-    for (int i = 0; i < NUM_BODIES; i++) h_sorted[i] = i;
-    queue.enqueueWriteBuffer(buf_sorted, CL_TRUE, 0, (numNodes+1)*sizeof(int), h_sorted.data());
-
-    std::vector<float> h_zeros(NUM_BODIES, 0.0f);
-    queue.enqueueWriteBuffer(buf_accX, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_zeros.data());
-    queue.enqueueWriteBuffer(buf_accY, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_zeros.data());
-    queue.enqueueWriteBuffer(buf_accZ, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_zeros.data());
-
-    glBindBuffer(GL_ARRAY_BUFFER, sim.getMassVBO());
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(float)*NUM_BODIES, h_mass.data());
-
-    // ── Simulate lambda ─────────────────────────────────────────────────────
-#pragma region kernelArguments
-
-    boundingBoxKernel.setArg(0, buf_step);
-    boundingBoxKernel.setArg(1, buf_x);
-    boundingBoxKernel.setArg(2, buf_y);
-    boundingBoxKernel.setArg(3, buf_z);
-    boundingBoxKernel.setArg(4, buf_blockCount);
-    boundingBoxKernel.setArg(5, buf_bottom);
-    boundingBoxKernel.setArg(6, buf_mass);
-    boundingBoxKernel.setArg(7, buf_numNodes);
-    boundingBoxKernel.setArg(8, buf_minX);
-    boundingBoxKernel.setArg(9, buf_minY);
-    boundingBoxKernel.setArg(10, buf_minZ);
-    boundingBoxKernel.setArg(11, buf_maxX);
-    boundingBoxKernel.setArg(12, buf_maxY);
-    boundingBoxKernel.setArg(13, buf_maxZ);
-    boundingBoxKernel.setArg(14, buf_child);
-    boundingBoxKernel.setArg(15, buf_start);
-    boundingBoxKernel.setArg(16, buf_nodeSize);
-    boundingBoxKernel.setArg(17, buf_maxDepth);
+    render.loop([&]()
+    { 
+        sim.step(render, params); 
+    });
     
-    buildTreeKernel.setArg(0, buf_x);         
-    buildTreeKernel.setArg(1, buf_y);
-    buildTreeKernel.setArg(2, buf_z);
-    buildTreeKernel.setArg(3, buf_mass);
-    buildTreeKernel.setArg(4, buf_child);
-    buildTreeKernel.setArg(5, buf_start);
-    buildTreeKernel.setArg(6, buf_nodeSize);
-    buildTreeKernel.setArg(7, buf_bottom);
-    buildTreeKernel.setArg(8, buf_maxDepth);
-
-    // summarizeTree
-    sumInfoKernel.setArg(0, buf_x);         
-    sumInfoKernel.setArg(1, buf_y);
-    sumInfoKernel.setArg(2, buf_z);
-    sumInfoKernel.setArg(3, buf_mass);
-    sumInfoKernel.setArg(4, buf_child);
-    sumInfoKernel.setArg(5, buf_nodeCount);
-    sumInfoKernel.setArg(6, buf_bottom);
-    
-
-    // sort
-    sortKernel.setArg(0, buf_child);
-    sortKernel.setArg(1, buf_nodeCount);
-    sortKernel.setArg(2, buf_start);
-    sortKernel.setArg(3, buf_sorted);
-    sortKernel.setArg(4, buf_bottom);
-    sortKernel.setArg(5, buf_numNodes);
-
-    // force
-    forceKernel.setArg(0, buf_x);         
-    forceKernel.setArg(1, buf_y);
-    forceKernel.setArg(2, buf_z);
-    forceKernel.setArg(3, buf_mass);
-    forceKernel.setArg(4, buf_child);
-    forceKernel.setArg(5, buf_nodeSize);
-    forceKernel.setArg(6, buf_sorted);
-    forceKernel.setArg(7, buf_accX);       
-    forceKernel.setArg(8, buf_accY);
-    forceKernel.setArg(9, buf_accZ);
-    forceKernel.setArg(10, buf_numNodes);
-
-    // integrate
-    integrateKernel.setArg(0, buf_x);   
-    integrateKernel.setArg(1, buf_y);
-    integrateKernel.setArg(2, buf_z);
-    integrateKernel.setArg(3, buf_vx);  
-    integrateKernel.setArg(4, buf_vy);
-    integrateKernel.setArg(5, buf_vz);
-    integrateKernel.setArg(6, buf_accX); 
-    integrateKernel.setArg(7, buf_accY);
-    integrateKernel.setArg(8, buf_accZ);
-
-    // writePositions — arg 3 (VBO) set per-frame in simulate lambda
-    writePositionsKernel.setArg(0, buf_x);
-    writePositionsKernel.setArg(1, buf_y);
-    writePositionsKernel.setArg(2, buf_z);
-
-#pragma endregion    
-
-
-    int maxComputeUnits = device.getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
-
-    std::cout << "Max compute units:" << maxComputeUnits << std::endl;
-
-    cl::NDRange global (NUM_BODIES);
-    cl::NDRange safe (maxComputeUnits * THREADS);
-    cl::NDRange local (THREADS);
-
-    //std::cout << device.getInfo<CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS>() << std::endl;
-
-    int j = 0;
-
-
-    auto simulateStep = [&]()
-    {
-        try 
-        {
-            if (params.restart)
-            {
-                params.restart = false;
-                 queue.finish(); 
-                // Re-generate bodies with current params
-                // (same init code as original, but use params.g etc.)
-                // Re-upload to GPU:
-                queue.enqueueWriteBuffer(buf_x,  CL_TRUE, 0, NUM_BODIES*sizeof(float), h_x.data());
-                queue.enqueueWriteBuffer(buf_y,  CL_TRUE, 0, NUM_BODIES*sizeof(float), h_y.data());
-                queue.enqueueWriteBuffer(buf_z,  CL_TRUE, 0, NUM_BODIES*sizeof(float), h_z.data());
-                queue.enqueueWriteBuffer(buf_vx, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_vx.data());
-                queue.enqueueWriteBuffer(buf_vy, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_vy.data());
-                queue.enqueueWriteBuffer(buf_vz, CL_TRUE, 0, NUM_BODIES*sizeof(float), h_vz.data());
-                queue.enqueueWriteBuffer(buf_mass,CL_TRUE,0, NUM_BODIES*sizeof(float), h_mass.data());
-            }
-            int zero = 0, one_val = 1;
-            cl_int empty_val = -1;
-            float mass_neg = -1.0f;
-            cl_float zero_f = 0.0f;
-
-            queue.enqueueWriteBuffer(buf_blockCount, CL_FALSE, 0, sizeof(int), &zero);
-            queue.enqueueWriteBuffer(buf_maxDepth,   CL_FALSE, 0, sizeof(int), &one_val);
-            
-            queue.enqueueFillBuffer(buf_accX, zero_f, 0, NUM_BODIES * sizeof(cl_float));
-            queue.enqueueFillBuffer(buf_accY, zero_f, 0, NUM_BODIES * sizeof(cl_float));
-            queue.enqueueFillBuffer(buf_accZ, zero_f, 0, NUM_BODIES * sizeof(cl_float));
-            queue.enqueueFillBuffer(buf_child, empty_val, 0, sizeof(cl_int) * 8 * (numNodes + 1));
-            queue.enqueueFillBuffer(buf_start, empty_val, 0, sizeof(cl_int) * (numNodes + 1));
-            queue.enqueueFillBuffer(buf_mass, mass_neg, sizeof(float) * NUM_BODIES, sizeof(float) * (numNodes + 1 - NUM_BODIES));
-
-
-            int writeBuf = current;
-            std::vector<cl::Memory> shared = { buf_pos_gl[writeBuf] };
-            writePositionsKernel.setArg(3, buf_pos_gl[writeBuf]);
-
-
-            queue.enqueueNDRangeKernel(boundingBoxKernel, cl::NullRange, global, local);
-            queue.enqueueBarrierWithWaitList();
-            
-            queue.enqueueNDRangeKernel(buildTreeKernel, cl::NullRange, safe, local);
-            queue.enqueueBarrierWithWaitList();
-            
-            queue.enqueueNDRangeKernel(sumInfoKernel, cl::NullRange, local, local);
-            queue.enqueueBarrierWithWaitList();
-
-            queue.enqueueNDRangeKernel(sortKernel, cl::NullRange, local, local);
-            queue.enqueueBarrierWithWaitList();
-            
-            queue.enqueueNDRangeKernel(forceKernel, cl::NullRange, global, local);
-            queue.enqueueBarrierWithWaitList();
-            
-            
-            queue.enqueueNDRangeKernel(integrateKernel, cl::NullRange, global, local);
-            queue.enqueueBarrierWithWaitList();
-
-            queue.enqueueAcquireGLObjects(&shared);
-            queue.enqueueNDRangeKernel(writePositionsKernel, cl::NullRange, global, local);
-            queue.enqueueReleaseGLObjects(&shared);
-
-            queue.flush();
-
-            current = 1 - current;
-        }
-        catch (cl::Error& e) {
-            std::cerr << "OpenCL error: " << e.what() << " (" << e.err() << ")\n";
-            exit(1);
-        }
-    };
-
-    sim.loop(simulateStep);
     return 0;
 }
