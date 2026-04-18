@@ -14,36 +14,32 @@ __kernel void sortKernel(
     __global int* bottom,
     __global int* numNodes)
 {
-    const int stepSize = get_local_size(0) * get_num_groups(0);
+    // Only thread 0 runs — parent_index > child_index always (atom_dec guarantee).
+    // Processing high→low ensures parent start[] is set before child reads it.
+    if (get_global_id(0) != 0) return;
+
     const int btm = *bottom;
 
-    int cell = NUMBER_OF_NODES + 1 - stepSize + get_global_id(0);
-
-    while (cell >= btm) 
+    for (int cell = NUMBER_OF_NODES; cell >= btm; cell--)
     {
         int s = start[cell];
-        if (s >= 0) 
+        if (s < 0) continue;  // cell wasn't reached by tree (shouldn't happen)
+
+        for (int i = 0; i < NUMBER_OF_CELLS; i++)
         {
-#pragma unroll NUMBER_OF_CELLS
-            for (int i = 0; i < NUMBER_OF_CELLS; i++) 
+            int c = child[NUMBER_OF_CELLS * cell + i];
+
+            if (c >= NUM_BODIES)
             {
-                int c = child[NUMBER_OF_CELLS * cell + i];
-
-                if (c >= NUM_BODIES) 
-                {
-                    start[c] = s;
-                    mem_fence(CLK_GLOBAL_MEM_FENCE);
-                    s += nodeCount[c];
-                } 
-                else if (c >= 0)
-                {
-                    sorted[s] = c;
-                    s++;
-                }
+                // Internal cell — pass start index down
+                start[c] = s;
+                s += nodeCount[c];
             }
-            cell -= stepSize;
+            else if (c >= 0)
+            {
+                // Leaf body — record in sorted array
+                sorted[s++] = c;
+            }
         }
-
-        barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
     }
 }

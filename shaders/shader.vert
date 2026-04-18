@@ -5,6 +5,7 @@ layout(location = 1) in float inMass;
 
 uniform mat4 projection;
 uniform mat4 view;
+uniform int blackHoleIndex;
 
 void main()
 {
@@ -15,5 +16,12 @@ void main()
     float massLog = log(inMass + 1.0) / log(200000001.0);
 
     // Black hole gets a large bright point, stars scale with mass
-    gl_PointSize = clamp(massLog * 48.0 * 50000.0 / dist, 1.0, 64.0) * 2;
+    if (gl_VertexID == blackHoleIndex)
+    {
+        gl_PointSize = 100.0;
+    }
+    else
+    {
+        gl_PointSize = clamp(massLog * 48.0 * 50000.0 / dist, 1.0, 64.0) * 2;
+    }
 }

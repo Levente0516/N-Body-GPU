@@ -32,7 +32,8 @@ __kernel void forceKernel(
     float ay = 0.0f;
     float az = 0.0f;
 
-    int stk[MAXDEPTH * 8];
+    float f;
+    int stk[64];
     int top = 0;
     stk[top++] = NUMBER_OF_NODES;
 
@@ -52,7 +53,7 @@ __kernel void forceKernel(
             const float dx = x[c] - bx;
             const float dy = y[c] - by;
             const float dz = z[c] - bz;
-            const float dist2 = dx*dx + dy*dy + dz*dz + SOFTENING*SOFTENING;
+            const float dist2 = dx*dx + dy*dy + dz*dz + SOFTENING * SOFTENING;
             const float invD  = native_rsqrt(dist2);
 
             if (c < NUM_BODIES) 
@@ -62,7 +63,9 @@ __kernel void forceKernel(
                     continue;
                 } 
 
-                const float f = G * mass[c] * invD * invD * invD;
+                f = G * mass[c] * invD * invD * invD;
+
+
 
                 ax += dx * f; 
                 ay += dy * f; 
@@ -72,19 +75,22 @@ __kernel void forceKernel(
             {
                 if (nodeSize[c] * invD < THETA) 
                 {
-                    const float f = G * mass[c] * invD * invD * invD;
+                    f = G * mass[c] * invD * invD * invD;
 
+                    
                     ax += dx * f; 
                     ay += dy * f; 
                     az += dz * f;
                 } 
-                else if (top < (MAXDEPTH * 8) - 1) 
+                else if (top < 63) 
                 {
                     stk[top++] = c;
                 }
             }
         }
     }
+
+
 
     accX[si] = ax;
     accY[si] = ay;

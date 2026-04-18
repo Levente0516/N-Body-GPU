@@ -1,0 +1,15 @@
+[submodule "lib/OpenCL-Headers"]
+	path = lib/OpenCL-Headers
+	url = https://github.com/KhronosGroup/OpenCL-Headers
+[submodule "lib/OpenCL-SDK"]
+	path = lib/OpenCL-SDK
+	url = https://github.com/KhronosGroup/OpenCL-SDK
+[submodule "lib/OpenCL-ICD-Loader"]
+	path = lib/OpenCL-ICD-Loader
+	url = https://github.com/KhronosGroup/OpenCL-ICD-Loader
+[submodule "lib/glfw"]
+	path = lib/glfw
+	url = https://github.com/glfw/glfw
+[submodule "lib/glm"]
+	path = lib/glm
+	url = https://github.com/g-truc/glm

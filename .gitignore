@@ -1,0 +1,16 @@
+# build output
+n-body.exe
+*.exe
+*.o
+*.obj
+
+# OpenGL/OpenCL compiled outputs
+*.spv
+
+# IDE
+.vscode/
+.idea/
+
+# Windows junk
+*.dll
+*.pdb
