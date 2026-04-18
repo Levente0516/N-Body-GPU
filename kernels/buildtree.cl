@@ -4,6 +4,8 @@
 #pragma OPENCL EXTENSION cl_khr_local_int32_base_atomics  : enable
 
 #define NUMBER_OF_CELLS 8
+#define EMPTY -1
+#define LOCKED -2
 
 __attribute__((reqd_work_group_size(THREADS, 1, 1)))
 __kernel void buildTreeKernel(

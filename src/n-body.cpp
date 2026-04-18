@@ -17,26 +17,33 @@
 #include <chrono>
 #define NOMINMAX
 #include <windows.h>
-
 #define CL_HPP_TARGET_OPENCL_VERSION 210 
 #define CL_HPP_MINIMUM_OPENCL_VERSION 200
-
 #include <GL/gl.h>
 #include <GLFW/glfw3.h>
 #include "variables.hpp"
-
 #define CL_HPP_ENABLE_EXCEPTIONS
 #ifdef __APPLE__
 #include <OpenCL/opencl.hpp>
 #else
 #include <CL/opencl.hpp>
 #endif
-
 #include <CL/cl_gl.h>
 #include <wingdi.h>
-
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+
+const int NUM_BODIES = 32768; //131072 //32768 //
+const int THREADS = 64;
+const int WARPSIZE = 64;
+const float SPAWN_RANGE = 100000.0f;
+const float THETA = 0.5f;
+const float G = 5.0f;
+const float SOFTENING = 50.0f;
+const float DT = 1.0f;
+const int CAMERAZOOM = 2;
+const int MAXDEPTH = 64;
+
 
 int current = 0;
 
@@ -461,7 +468,7 @@ int main()
     cl::CommandQueue queue(context, device);
 
     // ── Build kernels ───────────────────────────────────────────────────────
-    std::string configSrc = loadFile("variables.hpp");
+
     std::string kernelSrc = loadFile("kernels/boundingbox.cl") +
                             loadFile("kernels/buildtree.cl") +
                             loadFile("kernels/suminfo.cl") +
@@ -471,13 +478,19 @@ int main()
                             loadFile("kernels/writepos.cl");
 
     cl::Program::Sources sources;
-    sources.push_back(configSrc);
     sources.push_back(kernelSrc);
 
     int numNodes = calcNumNodes();
 
     std::string buildOptions = std::string("-cl-mad-enable ") +
-                                "-D NUMBER_OF_NODES=" + std::to_string(numNodes);
+                                " -D NUMBER_OF_NODES=" + std::to_string(numNodes) +
+                                " -D THREADS=" + std::to_string(THREADS) +
+                                " -D WARPSIZE=" + std::to_string(WARPSIZE) +
+                                " -D NUM_BODIES=" + std::to_string(NUM_BODIES) +
+                                " -D DT=" + std::to_string(DT) +
+                                " -D SOFTENING=" + std::to_string(SOFTENING) +
+                                " -D G=" + std::to_string(G) +
+                                " -D THETA=" + std::to_string(THETA);
 
     cl::Program program(context, sources);
     try
