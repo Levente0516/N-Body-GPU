@@ -43,22 +43,22 @@ const int CAMERAZOOM = 1;
 const int MAXDEPTH = 64;
 
 struct SimParams {
-    float g          = 5.0f;
-    float dt         = 1.0f;
+    float g          = 10.0f;
+    float dt         = 0.5f;
     float theta      = 0.5f;
-    float softening  = 500.0f;
+    float softening  = 800.0f;
     int   numBodies  = 32768; //TODO delete the const and pass this everywhere
     float bhMass = 1e10f;
     int spawnRange = SPAWN_RANGE;
-    int   distType   = 0;  // 0=disk, 1=uniform, 2=sphere, 3=ring
+    int   distType   = 0;  // 0=disk, 1=uniform, 2=sphere
     bool  restart    = false;
 };
 
 int current = 0;
 
-int calcNumNodes()
+int calcNumNodes(SimParams& p)
 {
-    int numNodes = NUM_BODIES * 2;
+    int numNodes = p.numBodies * 2;
     if (numNodes < 1024 * 7)
     {
         numNodes = 1024 * 7;
@@ -175,7 +175,6 @@ class SimulationRender
             if (!glfwInit())
                 exit(1);
 
-            // OpenGL context hints
             glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
             glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
             glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -294,14 +293,12 @@ class SimulationRender
 
                 if (ctrl) 
                 {
-                    // Rotate (old behaviour)
                     s->camYaw   += (float)dx * 0.005f;
                     s->camPitch += (float)dy * 0.005f;
                     s->camPitch  = glm::clamp(s->camPitch, glm::radians(-89.f), glm::radians(89.f));
                 }
                 else
                 {
-                    // Pan: move camTarget in camera's local XZ plane
                     glm::vec3 dir;
                     dir.x = std::cos(s->camPitch) * std::sin(s->camYaw);
                     dir.y = std::sin(s->camPitch);
@@ -351,11 +348,9 @@ class SimulationRender
             glBindBuffer(GL_ARRAY_BUFFER, massVBO);
             glBufferData(GL_ARRAY_BUFFER, sizeof(float) * NUM_BODIES, nullptr, GL_STREAM_DRAW);
 
-            // VAO
             glGenVertexArrays(1, &vao);
             glBindVertexArray(vao);
 
-            // bind first buffer just to define layout
             glBindBuffer(GL_ARRAY_BUFFER, vbo[0]);
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, (void *)0);
             glEnableVertexAttribArray(0);
@@ -404,7 +399,6 @@ class SimulationRender
             std::cout << "OpenGL initialized" << std::endl;
             std::cout << "Renderer: " << glGetString(GL_RENDERER) << std::endl;
 
-            // At the END of initGL(), after everything else:
             IMGUI_CHECKVERSION();
             ImGui::CreateContext();
             ImGuiIO& io = ImGui::GetIO();
@@ -427,7 +421,7 @@ class SimulationRender
             glm::mat4 projection = glm::perspective(
                 glm::radians(45.0f), // Field of view
                 aspect,
-                100.0f,              // Near plane (increase this)
+                100.0f,              // Near plane
                 SPAWN_RANGE * 100.0f // Far plane
             );
 
@@ -465,13 +459,12 @@ class SimulationRender
 
             glBindVertexArray(0);
 
-            // Add this block just before glfwSwapBuffers(window):
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
 
             ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
-            ImGui::SetNextWindowSize(ImVec2(375, 0), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(400, 0), ImGuiCond_Always);
             ImGui::SetNextWindowBgAlpha(0.75f);
             ImGui::Begin("N-Body Controls", nullptr,
                 ImGuiWindowFlags_NoMove |
@@ -537,7 +530,7 @@ class Simulation
 
         void init(SimulationRender& render, SimParams& p)
         {
-            numNodes = calcNumNodes();
+            numNodes = calcNumNodes(p);
             initOpenGl(render);
             buildKernels(p);
             allocateBuffers();
@@ -551,13 +544,15 @@ class Simulation
         {
             if (p.restart) 
             {
+                numNodes = calcNumNodes(p);
                 p.restart = false;
                 queue.finish();
-                buildKernels(p);  
-                setKernelArgs();   
-                initNDRanges();
+                buildKernels(p);
+                allocateBuffers();
                 generateBodies(p);
                 uploadBodies();
+                initNDRanges();
+                setKernelArgs();   
 
                 glBindBuffer(GL_ARRAY_BUFFER, render.getMassVBO());
                 glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(float)*NUM_BODIES, h_mass.data());
@@ -605,6 +600,7 @@ class Simulation
                 queue.enqueueNDRangeKernel(integrateKernel, cl::NullRange, global, local);
                 queue.enqueueBarrierWithWaitList();
 
+                glFinish();
                 queue.enqueueAcquireGLObjects(&shared);
                 queue.enqueueNDRangeKernel(writePositionsKernel, cl::NullRange, global, local);
                 queue.enqueueReleaseGLObjects(&shared);
@@ -718,6 +714,14 @@ class Simulation
             }
         }
 
+        static std::string fstr(float v)
+        {
+            std::ostringstream ss;
+            ss.imbue(std::locale::classic());
+            ss << v;
+            return ss.str();
+        }
+
         void buildKernels(const SimParams& p)
         {
             std::string kernelSrc = 
@@ -738,10 +742,10 @@ class Simulation
                 " -D THREADS="         + std::to_string(THREADS)  +
                 " -D WARPSIZE="        + std::to_string(WARPSIZE) +
                 " -D NUM_BODIES="      + std::to_string(p.numBodies) +
-                " -D DT="              + std::to_string(p.dt)       +
-                " -D SOFTENING="       + std::to_string(p.softening)+
-                " -D G="               + std::to_string(p.g)        +
-                " -D THETA="           + std::to_string(p.theta);
+                " -D DT="              + fstr(p.dt)       +
+                " -D SOFTENING="       + fstr(p.softening)+
+                " -D G="               + fstr(p.g)        +
+                " -D THETA="           + fstr(p.theta);
             
             program = cl::Program(context, sources);
 
@@ -871,6 +875,7 @@ class Simulation
             integrateKernel.setArg(6, buf_accX);
             integrateKernel.setArg(7, buf_accY);
             integrateKernel.setArg(8, buf_accZ);
+            integrateKernel.setArg(9, buf_mass);
 
             writePositionsKernel.setArg(0, buf_x);
             writePositionsKernel.setArg(1, buf_y);
@@ -881,7 +886,7 @@ class Simulation
         {
             int maxComputeUnits = device.getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
             global = cl::NDRange(NUM_BODIES);
-            safe = cl::NDRange(maxComputeUnits * THREADS);
+            safe = cl::NDRange(/*maxComputeUnits * */THREADS);
             local = cl::NDRange(THREADS);
         }
 
@@ -918,19 +923,29 @@ class Simulation
 
         void generateDisk(const SimParams& p)
         {
+            float safeT   = 50.0f * p.dt;
+            float r_min   = std::cbrt((safeT / (2.0f*(float)M_PI)) *
+                                    (safeT / (2.0f*(float)M_PI)) *
+                                    p.g * p.bhMass);
+            float r_max   = (float)p.spawnRange;
+            float eps = p.softening;
             for (int i = 1; i < NUM_BODIES; i++) 
             {
                 float angle  = ((float)rand()/RAND_MAX) * 2.0f * (float)M_PI;
                 float u      = (float)rand()/RAND_MAX;
-                float radius = std::sqrt(u) * p.spawnRange;
+                float radius = r_min + (r_max - r_min) * std::sqrt(u);
 
                 h_x[i] = radius * std::cos(angle);
                 h_y[i] = radius * std::sin(angle);
-                h_z[i] = ((float)rand()/RAND_MAX - 0.5f) * 0.1f * p.spawnRange;
+                h_z[i] = ((float)rand()/RAND_MAX - 0.5f) * 0.05f * r_max;
 
-                float r = std::max(std::sqrt(h_x[i]*h_x[i] + h_y[i]*h_y[i]), 1.0f);
-                float v = std::sqrt(p.g * p.bhMass / r);
-                std::cout << v << std::endl;
+                float r2 = h_x[i]*h_x[i] + h_y[i]*h_y[i];
+                float r  = std::max(std::sqrt(r2), r_min);
+                
+                float dist2 = r2 + eps*eps;
+                float dist  = std::sqrt(dist2);
+                float v     = std::sqrt(p.g * p.bhMass * r2 / (dist2 * dist));
+
                 h_vx[i] =  std::sin(angle) * v;
                 h_vy[i] = -std::cos(angle) * v;
                 h_vz[i] = 0.0f;
@@ -958,7 +973,7 @@ class Simulation
                 h_x[i] = r * std::sin(phi) * std::cos(theta);
                 h_y[i] = r * std::sin(phi) * std::sin(theta);
                 h_z[i] = r * std::cos(phi);
-                // Tangential velocity for rough orbital motion
+
                 float rl = std::max(std::sqrt(h_x[i]*h_x[i] + h_y[i]*h_y[i]), 1.0f);
                 float vt = std::sqrt(p.g * p.bhMass / rl) * 0.7f;
                 h_vx[i] =  h_y[i] / rl * vt;
@@ -985,7 +1000,7 @@ class Simulation
             std::vector<int> sorted(numNodes+1, 0);
             for (int i = 0; i < NUM_BODIES; i++)
             {
-                sorted[i] = i;
+                sorted[i] = 0;
             }
 
             queue.enqueueWriteBuffer(buf_sorted, CL_TRUE, 0, (numNodes+1)*sizeof(int), sorted.data());

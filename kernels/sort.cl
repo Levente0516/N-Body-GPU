@@ -14,8 +14,7 @@ __kernel void sortKernel(
     __global int* bottom,
     __global int* numNodes)
 {
-    // Only thread 0 runs — parent_index > child_index always (atom_dec guarantee).
-    // Processing high→low ensures parent start[] is set before child reads it.
+
     if (get_global_id(0) != 0) return;
 
     const int btm = *bottom;
@@ -23,7 +22,7 @@ __kernel void sortKernel(
     for (int cell = NUMBER_OF_NODES; cell >= btm; cell--)
     {
         int s = start[cell];
-        if (s < 0) continue;  // cell wasn't reached by tree (shouldn't happen)
+        if (s < 0) continue;  
 
         for (int i = 0; i < NUMBER_OF_CELLS; i++)
         {
@@ -31,13 +30,13 @@ __kernel void sortKernel(
 
             if (c >= NUM_BODIES)
             {
-                // Internal cell — pass start index down
+
                 start[c] = s;
                 s += nodeCount[c];
             }
             else if (c >= 0)
             {
-                // Leaf body — record in sorted array
+
                 sorted[s++] = c;
             }
         }

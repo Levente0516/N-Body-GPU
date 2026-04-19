@@ -15,7 +15,8 @@ __kernel void integrateKernel(
     __global float* vz,
     __global float* accX, 
     __global float* accY, 
-    __global float* accZ)
+    __global float* accZ,
+    __global float* mass)
 {
     int stepSize = get_local_size(0) * get_num_groups(0);
 
@@ -23,21 +24,14 @@ __kernel void integrateKernel(
     {
         if (i == 0) continue;  // black hole stays fixed
 
-        float delta_vx = accX[i] * DT * 0.5f;
-        float delta_vy = accY[i] * DT * 0.5f;
-        float delta_vz = accZ[i] * DT * 0.5f;
+        vx[i] += accX[i] * DT;
+        vy[i] += accY[i] * DT;
+        vz[i] += accZ[i] * DT;
 
-        float velX = vx[i] + delta_vx;
-        float velY = vy[i] + delta_vy;
-        float velZ = vz[i] + delta_vz;
+        x[i] += vx[i] * DT;
+        y[i] += vy[i] * DT;
+        z[i] += vz[i] * DT;
 
-        x[i]  += velX * DT;
-        y[i]  += velY * DT;
-        z[i]  += velZ * DT;
-
-        vx[i] = velX + delta_vx;
-        vy[i] = velY + delta_vy;
-        vz[i] = velZ + delta_vz;
     }
 }
 

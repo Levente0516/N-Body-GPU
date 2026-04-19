@@ -36,7 +36,8 @@ void main()
     else
     {
         // Stars: size scales with mass and shrinks with camera distance
-        float massLog = log(inMass + 1.0) / log(200000001.0);
-        gl_PointSize = clamp(massLog * 48.0 * 50000.0 / camDist, 1.0, 32.0);
+        //float massLog = log(inMass + 1.0) / log(200000001.0);
+        //gl_PointSize = clamp(massLog * 48.0 * 50000.0 / camDist, 1.0, 32.0);
+        gl_PointSize = 4.0;
     }
 }

@@ -33,7 +33,7 @@ __kernel void forceKernel(
     float az = 0.0f;
 
     float f;
-    int stk[64];
+    int stk[128];
     int top = 0;
     stk[top++] = NUMBER_OF_NODES;
 
@@ -47,7 +47,7 @@ __kernel void forceKernel(
 
             if (c < 0)
             {
-                break;
+                continue;
             }
 
             const float dx = x[c] - bx;
@@ -83,7 +83,7 @@ __kernel void forceKernel(
                     ay += dy * f; 
                     az += dz * f;
                 } 
-                else if (top < 63) 
+                else if (top < 127) 
                 {
                     stk[top++] = c;
                 }

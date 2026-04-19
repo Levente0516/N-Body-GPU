@@ -111,7 +111,7 @@ __kernel void buildTreeKernel(
                     {
                         depth++;
 
-                        if (currentR < 0.01f || depth > 52)
+                        if (currentR < SOFTENING || depth > 64)
                         {
                             child[NUMBER_OF_CELLS * node + childPath] = bodyIdx;
                             mem_fence(CLK_GLOBAL_MEM_FENCE);
