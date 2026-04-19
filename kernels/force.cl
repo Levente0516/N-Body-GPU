@@ -65,19 +65,19 @@ __kernel void forceKernel(
 
                 f = G * mass[c] * invD * invD * invD;
 
-                f *= 100;
+                //f *= 100;
 
                 ax += dx * f; 
                 ay += dy * f; 
                 az += dz * f;
-            } 
+            }
             else 
             {
                 if (nodeSize[c] * invD < THETA) 
                 {
                     f = G * mass[c] * invD * invD * invD;
 
-                    f *= 100;
+                    //f *= 100;
                     
                     ax += dx * f; 
                     ay += dy * f; 

@@ -46,9 +46,9 @@ struct SimParams {
     float g          = 5.0f;
     float dt         = 1.0f;
     float theta      = 0.5f;
-    float softening  = 50.0f;
+    float softening  = 500.0f;
     int   numBodies  = 32768; //TODO delete the const and pass this everywhere
-    float bhMass = 2e8f;
+    float bhMass = 1e10f;
     int spawnRange = SPAWN_RANGE;
     int   distType   = 0;  // 0=disk, 1=uniform, 2=sphere, 3=ring
     bool  restart    = false;
@@ -133,7 +133,6 @@ class SimulationRender
         float dragCamStartY = 0.0f;
         float dragCamStartZ = 0.0f;
         glm::vec3 camTarget = glm::vec3(0.0f);
-        ;
         float camYaw = 0.0f;
         float camPitch = glm::radians(65.0f);
 
@@ -203,11 +202,12 @@ class SimulationRender
             glfwSetWindowUserPointer(window, this);
 
             glfwSetKeyCallback(window, [](GLFWwindow *w, int key, int, int action, int)
-                            {
+            {
                 if (action == GLFW_PRESS && (key == GLFW_KEY_Q || key == GLFW_KEY_ESCAPE))
                 {
                     glfwSetWindowShouldClose(w, GLFW_TRUE);
-                } });
+                } 
+            });
 
             glfwSetScrollCallback(window, [](GLFWwindow *w, double, double yOffset)
             {
@@ -215,26 +215,30 @@ class SimulationRender
                 {
                     return;
                 } 
-                auto *sim = reinterpret_cast<SimulationRender*>(glfwGetWindowUserPointer(w));
+                auto *s = reinterpret_cast<SimulationRender*>(glfwGetWindowUserPointer(w));
 
+                s->camZoom = std::max(s->camZoom * ((yOffset > 0) ? 0.9f : 1.1f), 100.0f);
+
+                /*
                 double mouseX, mouseY;
                 glfwGetCursorPos(w, &mouseX, &mouseY);
-
+                
                 int winW, winH;
                 glfwGetWindowSize(w, &winW, &winH);
-
+                
                 float worldX = sim->camX + (mouseX / winW - 0.5f) * (SPAWN_RANGE / sim->camZoom);
                 float worldY = sim->camY + (0.5f - mouseY / winH) * (SPAWN_RANGE / sim->camZoom);
-
+                
                 float oldZoom = sim->camZoom;
                 float factor = (yOffset > 0) ? 0.9f : 1.1f;
                 sim->camZoom *= factor;
-
+                
                 float newWorldX = sim->camX + (mouseX / winW - 0.5f) * (SPAWN_RANGE / sim->camZoom);
                 float newWorldY = sim->camY + (0.5f - mouseY / winH) * (SPAWN_RANGE / sim->camZoom);
-
+                
                 sim->camX += worldX - newWorldX;
                 sim->camY += worldY - newWorldY;
+                */
 
                 // std::cout << "Zoo: " << sim->camZoom << "\nCamX: " << sim->camX << "\nCamY: " << sim->camY << std::endl;
             });
@@ -245,7 +249,16 @@ class SimulationRender
                 {
                     return;
                 } 
-                auto* sim = reinterpret_cast<SimulationRender*>(glfwGetWindowUserPointer(w));
+                auto* s = reinterpret_cast<SimulationRender*>(glfwGetWindowUserPointer(w));
+                if (button == GLFW_MOUSE_BUTTON_LEFT)
+                {
+                    s->dragging = (action == GLFW_PRESS);
+                    if (s->dragging)
+                    {
+                        glfwGetCursorPos(w, &s->dragStartX, &s->dragStartY);
+                    } 
+                }
+                /*
                 if (button == GLFW_MOUSE_BUTTON_LEFT)
                 {
                     if (action == GLFW_PRESS)
@@ -260,6 +273,7 @@ class SimulationRender
                         sim->dragging = false;
                     }
                 } 
+                */
             });
 
             glfwSetCursorPosCallback(window, [](GLFWwindow *w, double xpos, double ypos)
@@ -268,26 +282,58 @@ class SimulationRender
                 {
                     return;
                 } 
-                auto* sim = reinterpret_cast<SimulationRender*>(glfwGetWindowUserPointer(w));
-                if (!sim->dragging) return;
+                auto* s = reinterpret_cast<SimulationRender*>(glfwGetWindowUserPointer(w));
+                
+                if (!s->dragging) return;
 
+                double dx = xpos - s->dragStartX;
+                double dy = ypos - s->dragStartY;
+                s->dragStartX = xpos; s->dragStartY = ypos;
+
+                bool ctrl = (glfwGetKey(w, GLFW_KEY_LEFT_CONTROL)  == GLFW_PRESS || glfwGetKey(w, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS);
+
+                if (ctrl) 
+                {
+                    // Rotate (old behaviour)
+                    s->camYaw   += (float)dx * 0.005f;
+                    s->camPitch += (float)dy * 0.005f;
+                    s->camPitch  = glm::clamp(s->camPitch, glm::radians(-89.f), glm::radians(89.f));
+                }
+                else
+                {
+                    // Pan: move camTarget in camera's local XZ plane
+                    glm::vec3 dir;
+                    dir.x = std::cos(s->camPitch) * std::sin(s->camYaw);
+                    dir.y = std::sin(s->camPitch);
+                    dir.z = -std::cos(s->camPitch) * std::cos(s->camYaw);
+                    glm::vec3 right   = glm::normalize(glm::cross(dir, glm::vec3(0,1,0)));
+                    glm::vec3 flatFwd = glm::normalize(glm::cross(glm::vec3(0,1,0), right));
+                    float speed = s->camZoom * 0.0010f;
+                    s->camTarget -= right   * (float)dx * speed;
+                    s->camTarget += flatFwd * (float)dy * speed;
+                }
+
+                /*
+                if (!sim->dragging) return;
+                
                 double dx = xpos - sim->dragStartX;
                 double dy = ypos - sim->dragStartY;
-
+                
                 float sensitivity = 0.005f;
-
+                
                 sim->camYaw   += dx * sensitivity;
                 sim->camPitch += dy * sensitivity;
-
+                
                 // clamp pitch so you don't flip
                 sim->camPitch = glm::clamp(
                     sim->camPitch,
                     glm::radians(-89.0f),
                     glm::radians(89.0f)
                 );
-
+                
                 sim->dragStartX = xpos;
                 sim->dragStartY = ypos; 
+                */
             });
         }
 
@@ -398,18 +444,14 @@ class SimulationRender
                 glm::vec3(0, 1, 0));
 
             glUseProgram(program);
-            glUniformMatrix4fv(
-                glGetUniformLocation(program, "projection"),
-                1, GL_FALSE, glm::value_ptr(projection));
-
-            glUniformMatrix4fv(
-                glGetUniformLocation(program, "view"),
-                1, GL_FALSE, glm::value_ptr(view));
+            glUniformMatrix4fv(glGetUniformLocation(program, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+            glUniformMatrix4fv(glGetUniformLocation(program, "view"), 1, GL_FALSE, glm::value_ptr(view));
 
             int drawBuf = 1 - *current;
 
             GLint blackHoleLoc = glGetUniformLocation(program, "blackHoleIndex");
             glUniform1i(blackHoleLoc, 0);
+            glUniform1f(glGetUniformLocation(program, "uSpawnRange"), (float)simParams->spawnRange);
 
             glBindVertexArray(vao);
             glBindBuffer(GL_ARRAY_BUFFER, vbo[drawBuf]);
@@ -436,12 +478,13 @@ class SimulationRender
                 ImGuiWindowFlags_NoResize);
 
             ImGui::Text("Bodies: %d", NUM_BODIES);
+            ImGui::TextDisabled("Drag = move around  Ctrl+Drag = rotate  Scroll = zoom");
             ImGui::Separator();
             
             ImGui::SliderFloat("G",         &simParams->g,         0.1f, 50.0f);
             ImGui::SliderFloat("DT",        &simParams->dt,        0.01f, 5.0f);
             ImGui::SliderFloat("Theta",     &simParams->theta,     0.1f, 1.5f);
-            ImGui::SliderFloat("Softening", &simParams->softening, 1.0f, 500.0f);
+            ImGui::SliderFloat("Softening", &simParams->softening, 500.0f, 5000.0f);
 
             ImGui::Separator();
             const char* distributions[] = { "Disk", "Uniform", "Sphere", "Ring" };
@@ -566,7 +609,7 @@ class Simulation
                 queue.enqueueNDRangeKernel(writePositionsKernel, cl::NullRange, global, local);
                 queue.enqueueReleaseGLObjects(&shared);
 
-                queue.flush();
+                queue.finish();
 
                 current = 1 - current;
             }
@@ -887,6 +930,7 @@ class Simulation
 
                 float r = std::max(std::sqrt(h_x[i]*h_x[i] + h_y[i]*h_y[i]), 1.0f);
                 float v = std::sqrt(p.g * p.bhMass / r);
+                std::cout << v << std::endl;
                 h_vx[i] =  std::sin(angle) * v;
                 h_vy[i] = -std::cos(angle) * v;
                 h_vz[i] = 0.0f;
