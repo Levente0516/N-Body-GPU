@@ -35,7 +35,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-const int NUM_BODIES = 32768; //131072 //32768 //
+const int NUM_BODIES = 65536;//32768; //131072 //32768 //
 const int THREADS = 64;
 const int WARPSIZE = 64;
 const float SPAWN_RANGE = 100000.0f;
@@ -43,12 +43,12 @@ const int CAMERAZOOM = 1;
 const int MAXDEPTH = 64;
 
 struct SimParams {
-    float g          = 10.0f;
+    float g          = 4.0f;
     float dt         = 0.5f;
     float theta      = 0.5f;
-    float softening  = 800.0f;
-    int   numBodies  = 32768; //TODO delete the const and pass this everywhere
-    float bhMass = 1e10f;
+    float softening  = 10.0f;
+    int   numBodies  = 65536; //TODO delete the const and pass this everywhere
+    float bhMass = 2e9f;
     int spawnRange = SPAWN_RANGE;
     int   distType   = 0;  // 0=disk, 1=uniform, 2=sphere
     bool  restart    = false;
@@ -477,7 +477,7 @@ class SimulationRender
             ImGui::SliderFloat("G",         &simParams->g,         0.1f, 50.0f);
             ImGui::SliderFloat("DT",        &simParams->dt,        0.01f, 5.0f);
             ImGui::SliderFloat("Theta",     &simParams->theta,     0.1f, 1.5f);
-            ImGui::SliderFloat("Softening", &simParams->softening, 500.0f, 5000.0f);
+            ImGui::SliderFloat("Softening", &simParams->softening, 0.01f, 5000.0f);
 
             ImGui::Separator();
             const char* distributions[] = { "Disk", "Uniform", "Sphere", "Ring" };
@@ -565,6 +565,7 @@ class Simulation
                 float mass_neg = -1.0f;
                 cl_float zero_f = 0.0f;
 
+                /*
                 queue.enqueueWriteBuffer(buf_blockCount, CL_FALSE, 0, sizeof(int), &zero);
                 queue.enqueueWriteBuffer(buf_maxDepth,   CL_FALSE, 0, sizeof(int), &one_val);
                 
@@ -574,6 +575,7 @@ class Simulation
                 queue.enqueueFillBuffer(buf_child, empty_val, 0, sizeof(cl_int) * 8 * (numNodes + 1));
                 queue.enqueueFillBuffer(buf_start, empty_val, 0, sizeof(cl_int) * (numNodes + 1));
                 queue.enqueueFillBuffer(buf_mass, mass_neg, sizeof(float) * NUM_BODIES, sizeof(float) * (numNodes + 1 - NUM_BODIES));
+                */
 
 
                 int writeBuf = current;
@@ -737,7 +739,8 @@ class Simulation
             sources.push_back(kernelSrc);
 
             std::string opts =
-                std::string("-cl-mad-enable") +
+                std::string("-cl-mad-enable ") +
+                std::string("-cl-fast-relaxed-math ") +
                 " -D NUMBER_OF_NODES=" + std::to_string(numNodes) +
                 " -D THREADS="         + std::to_string(THREADS)  +
                 " -D WARPSIZE="        + std::to_string(WARPSIZE) +

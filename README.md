@@ -7,7 +7,7 @@
 * Device: IdeaPad Flex 5 14ABR8
 
 ## Reference:
-[![Watch on YouTube](https://img.youtube.com/vi/HgI0CbpVhtY/0.jpg)](https://www.youtube.com/watch?v=HgI0CbpVhtY)
+![Screenshot](media/Screenshot%202026-04-20%20112827.png)
 
 ## How to setup and run: 
 
