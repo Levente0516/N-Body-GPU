@@ -16,13 +16,14 @@ __kernel void integrateKernel(
     __global float* accX, 
     __global float* accY, 
     __global float* accZ,
-    __global float* mass)
+    __global float* mass,
+    float DT)
 {
     int stepSize = get_local_size(0) * get_num_groups(0);
 
     for (int i = get_global_id(0); i < NUM_BODIES; i += stepSize)
     {
-        if (i == 0) continue;  // black hole stays fixed
+        //if (i == 0) continue;  // black hole stays fixed
 
         vx[i] += accX[i] * DT;
         vy[i] += accY[i] * DT;

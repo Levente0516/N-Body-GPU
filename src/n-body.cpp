@@ -35,26 +35,34 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-const int NUM_BODIES = 65536;//32768; //131072 //32768 //
 const int THREADS = 64;
 const int WARPSIZE = 64;
-const float SPAWN_RANGE = 100000.0f;
 const int CAMERAZOOM = 1;
 const int MAXDEPTH = 64;
 
 struct SimParams {
-    float g          = 4.0f;
-    float dt         = 0.5f;
-    float theta      = 0.5f;
-    float softening  = 10.0f;
-    int   numBodies  = 65536; //TODO delete the const and pass this everywhere
+    float g = 4.0f;
+    float dt = 0.5f;
+    float theta = 0.5f;
+    float softening = 10.0f;
+    int   numBodies = 16384;
+    int   numBodiesIdx = 8;  
     float bhMass = 2e9f;
-    int spawnRange = SPAWN_RANGE;
-    int   distType   = 0;  // 0=disk, 1=uniform, 2=sphere
-    bool  restart    = false;
+    float spawnRange = 100000.0f;
+    float spawnRangeScale = 1.0f;
+    int   distType = 0;  // 0=disk, 1=uniform, 2=sphere
+    bool  restart = false;
+    bool  resetCamera = false;
+    bool reParam = false;
 };
 
-int current = 0;
+static const char* BODY_COUNT_LABELS[] = {
+    "64","128","256","512",
+    "1024","2048","4096","8192","16384","32768","65536"
+};
+static const int BODY_COUNT_VALUES[] = {
+    64,128,256,512,1024,2048,4096,8192,16384,32768,65536
+};
 
 int calcNumNodes(SimParams& p)
 {
@@ -121,7 +129,7 @@ GLuint createProgram(const std::string &vertSrc, const std::string &fragSrc)
 class SimulationRender
 {
     public:
-        float camZoom = SPAWN_RANGE * CAMERAZOOM * 2.0f;
+        float camZoom = 0.0f;
         float camX = 0.0f;
         float camY = 0.0f;
         float camZ = 0.0f;
@@ -143,13 +151,16 @@ class SimulationRender
         GLuint spriteTexture = 0;
         GLuint massVBO;
 
-        SimParams* simParams = nullptr; 
+        SimParams* simParams = nullptr;
+        SimParams defaultParams;
         int* current   = nullptr; 
 
         void init(SimParams* p, int* cur)
         {
             simParams = p;
+            defaultParams = *p;
             current = cur;
+            camZoom = (float)simParams->spawnRange * CAMERAZOOM * 2.0f;
             initWindow();
             initGL();
         }
@@ -168,6 +179,14 @@ class SimulationRender
         GLuint getVBO(int i) { return vbo[i]; }
 
         GLuint getMassVBO() { return massVBO; }
+
+        void resetView()
+        {
+            camZoom  = (float)simParams->spawnRange * 2.5f;
+            camYaw   = 0.0f;
+            camPitch = glm::radians(65.0f);
+            camTarget = glm::vec3(0.0f);
+        }
 
     private:
         void initWindow()
@@ -341,12 +360,12 @@ class SimulationRender
             for (int i = 0; i < 2; i++)
             {
                 glBindBuffer(GL_ARRAY_BUFFER, vbo[i]);
-                glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 3 * NUM_BODIES, nullptr, GL_STREAM_DRAW);
+                glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 3 * simParams->numBodies, nullptr, GL_STREAM_DRAW);
             }
 
             glGenBuffers(1, &massVBO);
             glBindBuffer(GL_ARRAY_BUFFER, massVBO);
-            glBufferData(GL_ARRAY_BUFFER, sizeof(float) * NUM_BODIES, nullptr, GL_STREAM_DRAW);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(float) * simParams->numBodies, nullptr, GL_STREAM_DRAW);
 
             glGenVertexArrays(1, &vao);
             glBindVertexArray(vao);
@@ -410,6 +429,12 @@ class SimulationRender
 
         void drawFrame()
         {
+            if (simParams->resetCamera) 
+            {
+                simParams->resetCamera = false;
+                resetView();
+            }
+
             int w, h;
             glfwGetFramebufferSize(window, &w, &h);
             glViewport(0, 0, w, h);
@@ -422,7 +447,7 @@ class SimulationRender
                 glm::radians(45.0f), // Field of view
                 aspect,
                 100.0f,              // Near plane
-                SPAWN_RANGE * 100.0f // Far plane
+                simParams->spawnRange * 100.0f // Far plane
             );
 
             glm::vec3 direction;
@@ -455,7 +480,7 @@ class SimulationRender
             glBindTexture(GL_TEXTURE_2D, spriteTexture);
             glUniform1i(glGetUniformLocation(program, "uSprite"), 0);
 
-            glDrawArrays(GL_POINTS, 0, NUM_BODIES);
+            glDrawArrays(GL_POINTS, 0, simParams->numBodies);
 
             glBindVertexArray(0);
 
@@ -470,25 +495,143 @@ class SimulationRender
                 ImGuiWindowFlags_NoMove |
                 ImGuiWindowFlags_NoResize);
 
-            ImGui::Text("Bodies: %d", NUM_BODIES);
+            ImGui::Text("Bodies: %d", simParams->numBodies);
             ImGui::TextDisabled("Drag = move around  Ctrl+Drag = rotate  Scroll = zoom");
             ImGui::Separator();
+            ImGui::TextDisabled("Important Note: Chaning a value");
+            ImGui::TextDisabled("results in the restart of the simulation");
+            ImGui::Separator();
             
-            ImGui::SliderFloat("G",         &simParams->g,         0.1f, 50.0f);
-            ImGui::SliderFloat("DT",        &simParams->dt,        0.01f, 5.0f);
-            ImGui::SliderFloat("Theta",     &simParams->theta,     0.1f, 1.5f);
-            ImGui::SliderFloat("Softening", &simParams->softening, 0.01f, 5000.0f);
+            if (ImGui::CollapsingHeader("Simulation variables", ImGuiTreeNodeFlags_NoAutoOpenOnLog))
+            {
+                ImGui::PushID("G");
+                ImGui::SliderFloat("G", &simParams->g, 0.1f, 50.0f);
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    simParams->reParam = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset"))
+                {
+                    simParams->g = defaultParams.g;
+                    simParams->reParam = true;
+                }
+                ImGui::PopID();
+    
+                ImGui::PushID("DT");
+                ImGui::SliderFloat("DT",&simParams->dt,0.01f, 5.0f);
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    simParams->reParam = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset"))
+                {
+                    simParams->dt = defaultParams.dt;
+                    simParams->reParam = true;
+                }
+                ImGui::PopID();
+    
+                ImGui::PushID("Theta");
+                ImGui::SliderFloat("Theta",     &simParams->theta,     0.1f, 1.5f);
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    simParams->reParam = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset"))
+                {
+                    simParams->theta = defaultParams.theta;
+                    simParams->reParam = true;
+                }
+                ImGui::PopID();
+    
+                ImGui::PushID("Softening");
+                ImGui::SliderFloat("Softening", &simParams->softening, 0.01f, 5000.0f);
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    simParams->reParam = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset"))
+                {
+                    simParams->softening = defaultParams.softening;
+                    simParams->reParam = true;
+                }
+                ImGui::PopID();
+
+                if (ImGui::Button("Reset everything", {-1, 0}))
+                {
+                    simParams->softening = defaultParams.softening;
+                    simParams->theta = defaultParams.theta;
+                    simParams->dt = defaultParams.dt;
+                    simParams->g = defaultParams.g;
+                }
+            }
 
             ImGui::Separator();
-            const char* distributions[] = { "Disk", "Uniform", "Sphere", "Ring" };
-            ImGui::Combo("Distribution", &simParams->distType, distributions, 4);
+
+            if (ImGui::CollapsingHeader("Initial Conditions", ImGuiTreeNodeFlags_NoAutoOpenOnLog)) {
+
+                // Body count — index maps to actual power-of-two value
+                if (ImGui::Combo("Body count", &simParams->numBodiesIdx, BODY_COUNT_LABELS, 11))
+                {
+                    simParams->numBodies = BODY_COUNT_VALUES[simParams->numBodiesIdx];
+                    simParams->restart = true;
+                }
+
+                // Spawn range scale
+                ImGui::PushID("Spawn range scale");
+                ImGui::SliderFloat("S.R. scale", &simParams->spawnRangeScale, 0.1f, 10.0f);
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    simParams->restart = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset"))
+                {
+                    simParams->spawnRangeScale= defaultParams.spawnRangeScale;
+                    simParams->restart = true;
+                }
+                ImGui::PopID();
+
+                ImGui::PushID("BH Mass");
+                ImGui::SliderFloat("BH Mass",  &simParams->bhMass,    1e6f,   1e12f);
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    simParams->restart = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset"))
+                {
+                    simParams->bhMass = defaultParams.bhMass;
+                    simParams->restart = true;
+                }
+                ImGui::PopID();
+                    
+                // Distribution
+                const char* distNames[] = {
+                    "Disk","Uniform","Sphere","Ring","Gaussian","Plummer","NFW (dark matter)"
+                };
+                if (ImGui::Combo("Distribution", &simParams->distType, distNames, 7))
+                {
+                    simParams->restart = true;
+                }
+            }
 
             ImGui::Separator();
-            const char* powersOfTwo[] = { "2", "4", "8", "16", "32", "64", "128", "256", "512", "1024", "2048", "4096", "8192", "16384", "32768"};
-            ImGui::Combo("Number of bodies", &simParams->numBodies, powersOfTwo, 15);
+
+            if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_NoAutoOpenOnLog))
+            {
+                ImGui::Text("Yaw: %.2f  Pitch: %.2f  Zoom: %.0f", camYaw, glm::degrees(camPitch), camZoom);
+                if (ImGui::Button("Reset Camera View", {-1, 0}))
+                {
+                    simParams->resetCamera = true;
+                }
+            }
 
             ImGui::Separator();
-            if (ImGui::Button("Restart Simulation", ImVec2(-1, 30)))
+            if (ImGui::Button("Restart Simulation", ImVec2(-1, 35)))
                 simParams->restart = true;
 
             ImGui::Text("%.1f FPS", ImGui::GetIO().Framerate);
@@ -533,11 +676,11 @@ class Simulation
             numNodes = calcNumNodes(p);
             initOpenGl(render);
             buildKernels(p);
-            allocateBuffers();
+            allocateBuffers(p);
             generateBodies(p);
-            uploadBodies();
-            setKernelArgs();
-            initNDRanges();
+            uploadBodies(p);
+            setKernelArgs(p);
+            initNDRanges(p);
         }
 
         void step(SimulationRender& render, SimParams& p)
@@ -548,14 +691,22 @@ class Simulation
                 p.restart = false;
                 queue.finish();
                 buildKernels(p);
-                allocateBuffers();
+                allocateBuffers(p);
                 generateBodies(p);
-                uploadBodies();
-                initNDRanges();
-                setKernelArgs();   
+                uploadBodies(p);
+                initNDRanges(p);
+                setKernelArgs(p);   
 
                 glBindBuffer(GL_ARRAY_BUFFER, render.getMassVBO());
-                glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(float)*NUM_BODIES, h_mass.data());
+                glBufferData(GL_ARRAY_BUFFER, sizeof(float)*p.numBodies, nullptr, GL_STREAM_DRAW);
+                glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(float)*p.numBodies, h_mass.data());
+            }
+
+            if (p.reParam)
+            {
+                p.reParam = false;
+                queue.finish();
+                setKernelArgs(p);
             }
 
             try 
@@ -565,17 +716,17 @@ class Simulation
                 float mass_neg = -1.0f;
                 cl_float zero_f = 0.0f;
 
-                /*
+                
                 queue.enqueueWriteBuffer(buf_blockCount, CL_FALSE, 0, sizeof(int), &zero);
                 queue.enqueueWriteBuffer(buf_maxDepth,   CL_FALSE, 0, sizeof(int), &one_val);
                 
-                queue.enqueueFillBuffer(buf_accX, zero_f, 0, NUM_BODIES * sizeof(cl_float));
-                queue.enqueueFillBuffer(buf_accY, zero_f, 0, NUM_BODIES * sizeof(cl_float));
-                queue.enqueueFillBuffer(buf_accZ, zero_f, 0, NUM_BODIES * sizeof(cl_float));
+                queue.enqueueFillBuffer(buf_accX, zero_f, 0, p.numBodies * sizeof(cl_float));
+                queue.enqueueFillBuffer(buf_accY, zero_f, 0, p.numBodies * sizeof(cl_float));
+                queue.enqueueFillBuffer(buf_accZ, zero_f, 0, p.numBodies * sizeof(cl_float));
                 queue.enqueueFillBuffer(buf_child, empty_val, 0, sizeof(cl_int) * 8 * (numNodes + 1));
                 queue.enqueueFillBuffer(buf_start, empty_val, 0, sizeof(cl_int) * (numNodes + 1));
-                queue.enqueueFillBuffer(buf_mass, mass_neg, sizeof(float) * NUM_BODIES, sizeof(float) * (numNodes + 1 - NUM_BODIES));
-                */
+                queue.enqueueFillBuffer(buf_mass, mass_neg, sizeof(float) * p.numBodies, sizeof(float) * (numNodes + 1 - p.numBodies));
+                
 
 
                 int writeBuf = current;
@@ -744,11 +895,7 @@ class Simulation
                 " -D NUMBER_OF_NODES=" + std::to_string(numNodes) +
                 " -D THREADS="         + std::to_string(THREADS)  +
                 " -D WARPSIZE="        + std::to_string(WARPSIZE) +
-                " -D NUM_BODIES="      + std::to_string(p.numBodies) +
-                " -D DT="              + fstr(p.dt)       +
-                " -D SOFTENING="       + fstr(p.softening)+
-                " -D G="               + fstr(p.g)        +
-                " -D THETA="           + fstr(p.theta);
+                " -D NUM_BODIES="      + std::to_string(p.numBodies);
             
             program = cl::Program(context, sources);
 
@@ -773,7 +920,7 @@ class Simulation
             std::cout << "Kernels compiled\n";
         }
 
-        void allocateBuffers()
+        void allocateBuffers(SimParams& p)
         {
             buf_x         = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (numNodes+1));
             buf_y         = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (numNodes+1));
@@ -781,19 +928,19 @@ class Simulation
             buf_mass      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (numNodes+1));
             buf_nodeSize  = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (numNodes+1));
             buf_nodeCount = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * (numNodes+1));
-            buf_vx        = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
-            buf_vy        = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
-            buf_vz        = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
-            buf_accX      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
-            buf_accY      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
-            buf_accZ      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
+            buf_vx        = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (p.numBodies));
+            buf_vy        = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (p.numBodies));
+            buf_vz        = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (p.numBodies));
+            buf_accX      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (p.numBodies));
+            buf_accY      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (p.numBodies));
+            buf_accZ      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (p.numBodies));
             buf_sorted    = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(int) * (numNodes+1));
-            buf_minX      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
-            buf_minY      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
-            buf_minZ      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
-            buf_maxX      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
-            buf_maxY      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
-            buf_maxZ      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (NUM_BODIES));
+            buf_minX      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (p.numBodies));
+            buf_minY      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (p.numBodies));
+            buf_minZ      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (p.numBodies));
+            buf_maxX      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (p.numBodies));
+            buf_maxY      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (p.numBodies));
+            buf_maxZ      = cl::Buffer(context, CL_MEM_READ_WRITE, sizeof(float) * (p.numBodies));
 
             int v0 = 0;
             int v1 = 1; 
@@ -807,11 +954,9 @@ class Simulation
             buf_numNodes   = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &numNodes);
             buf_maxDepth   = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &v1);
             buf_step       = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int), &vm1);
-
-            std::cout << "Buffers allocated. numNodes=" << numNodes << "\n";
         }
 
-        void setKernelArgs()
+        void setKernelArgs(SimParams& p)
         {
             boundingBoxKernel.setArg( 0, buf_step);
             boundingBoxKernel.setArg( 1, buf_x);
@@ -841,6 +986,7 @@ class Simulation
             buildTreeKernel.setArg(6, buf_nodeSize);
             buildTreeKernel.setArg(7, buf_bottom);
             buildTreeKernel.setArg(8, buf_maxDepth);
+            buildTreeKernel.setArg(9, p.softening);
 
             sumInfoKernel.setArg(0, buf_x);
             sumInfoKernel.setArg(1, buf_y);
@@ -868,6 +1014,9 @@ class Simulation
             forceKernel.setArg( 8, buf_accY);
             forceKernel.setArg( 9, buf_accZ);
             forceKernel.setArg(10, buf_numNodes);
+            forceKernel.setArg(11, p.softening);
+            forceKernel.setArg(12, p.g);
+            forceKernel.setArg(13, p.theta);
 
             integrateKernel.setArg(0, buf_x);
             integrateKernel.setArg(1, buf_y);
@@ -879,35 +1028,36 @@ class Simulation
             integrateKernel.setArg(7, buf_accY);
             integrateKernel.setArg(8, buf_accZ);
             integrateKernel.setArg(9, buf_mass);
+            integrateKernel.setArg(10, p.dt);
 
             writePositionsKernel.setArg(0, buf_x);
             writePositionsKernel.setArg(1, buf_y);
             writePositionsKernel.setArg(2, buf_z);
         }
         
-        void initNDRanges()
+        void initNDRanges(SimParams& p)
         {
             int maxComputeUnits = device.getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
-            global = cl::NDRange(NUM_BODIES);
+            global = cl::NDRange(p.numBodies);
             safe = cl::NDRange(/*maxComputeUnits * */THREADS);
             local = cl::NDRange(THREADS);
         }
 
         void generateBodies(const SimParams& p)
         {
-            h_x.resize(NUM_BODIES); 
-            h_y.resize(NUM_BODIES); 
-            h_z.resize(NUM_BODIES);
-            h_vx.resize(NUM_BODIES); 
-            h_vy.resize(NUM_BODIES);
-            h_vz.resize(NUM_BODIES);
-            h_mass.resize(NUM_BODIES);
+            h_x.resize(p.numBodies); 
+            h_y.resize(p.numBodies); 
+            h_z.resize(p.numBodies);
+            h_vx.resize(p.numBodies); 
+            h_vy.resize(p.numBodies);
+            h_vz.resize(p.numBodies);
+            h_mass.resize(p.numBodies);
 
             h_x[0] = h_y[0] = h_z[0] = 0.0f;
             h_vx[0] = h_vy[0] = h_vz[0] = 0.0f;
             h_mass[0] = p.bhMass;
 
-            for (int i = 1; i < NUM_BODIES; i++) 
+            for (int i = 1; i < p.numBodies; i++) 
             {
                 float f = std::pow((float)rand()/RAND_MAX, 2.0f);
                 h_mass[i] = 5000.0f + f * 50000.0f;
@@ -918,10 +1068,21 @@ class Simulation
                 case 0: generateDisk(p);    break;
                 case 1: generateUniform(p); break;
                 case 2: generateSphere(p);  break;
+                case 3: generateRing(p);     break;
+                case 4: generateGaussian(p); break;
+                case 5: generatePlummer(p);  break;
+                case 6: generateNFW(p);      break;
                 default: generateDisk(p);   break;
             }
 
             //std::cout << "Bodies generated (distribution = " << p.distType << ")\n";
+        }
+
+        float circVel(float r, const SimParams& p) {
+            float r2    = r * r;
+            float dist2 = r2 + p.softening * p.softening;
+            float dist  = std::sqrt(dist2);
+            return std::sqrt(p.g * p.bhMass * r2 / (dist2 * dist));
         }
 
         void generateDisk(const SimParams& p)
@@ -932,7 +1093,7 @@ class Simulation
                                     p.g * p.bhMass);
             float r_max   = (float)p.spawnRange;
             float eps = p.softening;
-            for (int i = 1; i < NUM_BODIES; i++) 
+            for (int i = 1; i < p.numBodies; i++) 
             {
                 float angle  = ((float)rand()/RAND_MAX) * 2.0f * (float)M_PI;
                 float u      = (float)rand()/RAND_MAX;
@@ -957,7 +1118,7 @@ class Simulation
 
         void generateUniform(const SimParams& p)
         {
-            for (int i = 1; i < NUM_BODIES; i++) {
+            for (int i = 1; i < p.numBodies; i++) {
                 h_x[i] = ((float)rand()/RAND_MAX - 0.5f) * p.spawnRange;
                 h_y[i] = ((float)rand()/RAND_MAX - 0.5f) * p.spawnRange;
                 h_z[i] = ((float)rand()/RAND_MAX - 0.5f) * p.spawnRange;
@@ -967,7 +1128,7 @@ class Simulation
 
         void generateSphere(const SimParams& p)
         {
-            for (int i = 1; i < NUM_BODIES; i++) {
+            for (int i = 1; i < p.numBodies; i++) {
                 float u = (float)rand()/RAND_MAX;
                 float v = (float)rand()/RAND_MAX;
                 float theta = 2.0f * (float)M_PI * u;
@@ -985,11 +1146,112 @@ class Simulation
             }
         }
 
-        void uploadBodies()
+        void generateRing(const SimParams& p)
+        {
+            float r_inner = (float)p.spawnRange * 0.35f;
+            float r_outer = (float)p.spawnRange * 0.65f;
+            float h_thick = (float)p.spawnRange * 0.02f;
+
+            for (int i = 1; i < p.numBodies; i++) {
+                float angle = ((float)rand()/RAND_MAX) * 2.0f*(float)M_PI;
+                float r     = r_inner + (r_outer - r_inner) * (float)rand()/RAND_MAX;
+                h_x[i] = r * std::cos(angle);
+                h_y[i] = r * std::sin(angle);
+                h_z[i] = ((float)rand()/RAND_MAX - 0.5f) * h_thick;
+                float v = circVel(r, p);
+                h_vx[i] =  std::sin(angle) * v;
+                h_vy[i] = -std::cos(angle) * v;
+                h_vz[i] = 0.0f;
+            }
+        }
+
+        float randNorm() 
+        {
+            float u1 = std::max((float)rand()/RAND_MAX, 1e-7f);
+            float u2 = (float)rand()/RAND_MAX;
+            return std::sqrt(-2.0f * std::log(u1)) * std::cos(2.0f*(float)M_PI * u2);
+        }
+
+        void generateGaussian(const SimParams& p)
+        {
+            float sigma = (float)p.spawnRange * 0.3f;
+            for (int i = 1; i < p.numBodies; i++) {
+                h_x[i] = randNorm() * sigma;
+                h_y[i] = randNorm() * sigma * 0.25f;  // flattened disk shape
+                h_z[i] = randNorm() * sigma;
+                float rl = std::max(std::sqrt(h_x[i]*h_x[i]+h_z[i]*h_z[i]), 1.0f);
+                float v  = circVel(rl, p) * 0.8f;
+                // Rotate around Y axis
+                h_vx[i] =  h_z[i]/rl * v;
+                h_vy[i] = 0.0f;
+                h_vz[i] = -h_x[i]/rl * v;
+            }
+        }
+
+        void generatePlummer(const SimParams& p)
+        {
+            float a = (float)p.spawnRange * 0.15f;  // Plummer radius (core size)
+            for (int i = 1; i < p.numBodies; i++) {
+                // Inverse CDF sampling: r = a / sqrt(u^(-2/3) - 1)
+                float u = (float)rand()/RAND_MAX;
+                float r = a / std::sqrt(std::pow(u, -2.0f/3.0f) - 1.0f);
+                r = std::min(r, (float)p.spawnRange * 2.0f);  // cap outliers
+
+                // Uniform direction on sphere
+                float cosTheta = 2.0f*(float)rand()/RAND_MAX - 1.0f;
+                float phi      = 2.0f*(float)M_PI*(float)rand()/RAND_MAX;
+                float sinTheta = std::sqrt(1.0f - cosTheta*cosTheta);
+                h_x[i] = r * sinTheta * std::cos(phi);
+                h_y[i] = r * cosTheta * 0.3f;   // flatten into disk
+                h_z[i] = r * sinTheta * std::sin(phi);
+
+                float rl = std::max(std::sqrt(h_x[i]*h_x[i]+h_z[i]*h_z[i]), 1.0f);
+                float v  = circVel(rl, p) * 0.75f;
+                h_vx[i] =  h_z[i]/rl * v;
+                h_vy[i] = 0.0f;
+                h_vz[i] = -h_x[i]/rl * v;
+            }
+        }
+
+        void generateNFW(const SimParams& p)
+        {
+            float rs    = (float)p.spawnRange * 0.2f;   // scale radius
+            float r_max = (float)p.spawnRange;
+            // Peak of ρ(r)*r² (for shell-volume sampling) occurs at r = rs
+            // We sample ρ(r)*r² and use rejection
+            float peakVal = rs * rs / (rs * (1.0f + 1.0f) * (1.0f + 1.0f));
+
+            for (int i = 1; i < p.numBodies; i++) {
+                float r;
+                // Rejection sampling loop — typically accepts in <3 trials
+                for (;;) {
+                    r = ((float)rand()/RAND_MAX) * r_max;
+                    float x   = r / rs;
+                    float pdf = r*r / (x * (1.0f + x) * (1.0f + x));
+                    float y   = ((float)rand()/RAND_MAX) * peakVal * r_max * r_max;
+                    if (y < pdf) break;
+                }
+
+                float cosTheta = 2.0f*(float)rand()/RAND_MAX - 1.0f;
+                float phi      = 2.0f*(float)M_PI*(float)rand()/RAND_MAX;
+                float sinTheta = std::sqrt(1.0f - cosTheta*cosTheta);
+                h_x[i] = r * sinTheta * std::cos(phi);
+                h_y[i] = r * cosTheta * 0.15f;  // very flat disk halo
+                h_z[i] = r * sinTheta * std::sin(phi);
+
+                float rl = std::max(std::sqrt(h_x[i]*h_x[i]+h_z[i]*h_z[i]), 1.0f);
+                float v  = circVel(rl, p);
+                h_vx[i] =  h_z[i]/rl * v;
+                h_vy[i] = 0.0f;
+                h_vz[i] = -h_x[i]/rl * v;
+            }
+        }
+
+        void uploadBodies(SimParams& p)
         {
             auto up = [&](cl::Buffer& b, const std::vector<float>& v) 
             {
-                queue.enqueueWriteBuffer(b, CL_TRUE, 0, NUM_BODIES*sizeof(float), v.data());
+                queue.enqueueWriteBuffer(b, CL_TRUE, 0, p.numBodies*sizeof(float), v.data());
             };
 
             up(buf_x, h_x); 
@@ -1001,17 +1263,17 @@ class Simulation
             up(buf_mass, h_mass);
 
             std::vector<int> sorted(numNodes+1, 0);
-            for (int i = 0; i < NUM_BODIES; i++)
+            for (int i = 0; i < p.numBodies; i++)
             {
                 sorted[i] = 0;
             }
 
             queue.enqueueWriteBuffer(buf_sorted, CL_TRUE, 0, (numNodes+1)*sizeof(int), sorted.data());
 
-            std::vector<float> zeros(NUM_BODIES, 0.0f);
-            queue.enqueueWriteBuffer(buf_accX, CL_TRUE, 0, NUM_BODIES*sizeof(float), zeros.data());
-            queue.enqueueWriteBuffer(buf_accY, CL_TRUE, 0, NUM_BODIES*sizeof(float), zeros.data());
-            queue.enqueueWriteBuffer(buf_accZ, CL_TRUE, 0, NUM_BODIES*sizeof(float), zeros.data());
+            std::vector<float> zeros(p.numBodies, 0.0f);
+            queue.enqueueWriteBuffer(buf_accX, CL_TRUE, 0, p.numBodies*sizeof(float), zeros.data());
+            queue.enqueueWriteBuffer(buf_accY, CL_TRUE, 0, p.numBodies*sizeof(float), zeros.data());
+            queue.enqueueWriteBuffer(buf_accZ, CL_TRUE, 0, p.numBodies*sizeof(float), zeros.data());
 
             queue.finish();
         }
@@ -1030,7 +1292,7 @@ int main()
     sim.init(render, params);
 
     glBindBuffer(GL_ARRAY_BUFFER, render.getMassVBO());
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(float)*NUM_BODIES, sim.h_mass.data());
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(float)*params.numBodies, sim.h_mass.data());
 
     render.loop([&]()
     { 

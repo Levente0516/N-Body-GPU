@@ -17,7 +17,8 @@ __kernel void buildTreeKernel(
     __global int* start,
     __global volatile float* nodeSize,
     __global volatile int* bottom,
-    __global volatile int* maxDepth)
+    __global volatile int* maxDepth,
+    float SOFTENING)
 {
 
     const float radius = nodeSize[NUMBER_OF_NODES];

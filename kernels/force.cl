@@ -16,7 +16,10 @@ __kernel void forceKernel(
     __global float* accX, 
     __global float* accY, 
     __global float* accZ,
-    __global int*   numNodes)
+    __global int*   numNodes,
+    float SOFTENING,
+    float G,
+    float THETA)
 {
     const int bodyIdx = get_global_id(0);
     if (bodyIdx >= NUM_BODIES)
