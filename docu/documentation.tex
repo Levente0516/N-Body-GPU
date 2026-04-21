@@ -1,0 +1,313 @@
+\documentclass[12pt]{article}
+\PassOptionsToPackage{hidelinks}{hyperref} 
+\usepackage{amsmath}
+\usepackage{tikz}
+\usepackage{geometry}
+\usepackage{bookmark}
+\usepackage{graphicx}
+
+\geometry{margin=2.5cm}
+
+\title{N-Body simulation in OpenCl with a AMD iGPU}
+\author{}
+\date{}
+
+\begin{document}
+
+\begin{titlepage}
+    \centering
+
+    \vspace*{2cm}
+
+    {\Huge \textbf{High-Performance N-Body Simulation}}\\[0.4cm]
+    {\Large Using OpenCL on an AMD Integrated GPU}
+
+    \vspace{2cm}
+
+    {\Large \textbf{Nagy Levente}}
+
+    \vspace{1cm}
+
+    {\large \today}
+
+    \vfill
+
+    \rule{\textwidth}{0.4pt}
+
+    \vspace{0.3cm}
+
+    {\large
+    Eötvös Lóránd Univeristy
+    }
+
+\end{titlepage}
+
+\pagebreak
+
+\tableofcontents
+
+
+\pagebreak
+
+\section{Introduction}
+
+\subsection{N-Body simulation}
+
+An N-body simulation models the motion of \textbf{N} particles in space,
+where each particle is influenced by physical forces such as gravity,
+defined by the gravitational constant \textbf{G}.
+
+\section{Problem}
+\subsection{General N-Body problem}
+
+According to the nature of the space, no more than 2 bodies can orbit each other without colliding.
+(Famously: 3-body problem)
+
+\subsection{N-Body computing}
+Computing the forces from each body acting on every other body is costly when \textbf{N} is a high number.
+A simple brute force algorithm time complexity is \[O(n^2)\]
+For a better algorithm exists the Barnes-Hut algorithm which time complexity is \[O(n \log(n))\]
+So its a much better solution for computing the forces. We can plot them to see the difference
+
+\subsection{Barnes-Hut alogithm}
+\subsubsection{Idea}
+The Barnes-Hut algorithm divides the space where the bodies located into 8 smaller chunks
+if there is more than 1 body is in a chunk. After recursively doing this for every body
+we are left with an Octree (each parent can have up to 8 children).
+In the given tree each node represtens a 3Dimensional space with a body.
+Than we compute the \textbf{COM} (Center Of Mass) of each node and use this formula
+\[\theta > \frac{s}{d}\] 
+where:
+\begin{itemize}
+    \item $s$ is the size of the region
+    \item $d$ is the distance to the center of mass
+    \item $\theta$ controls the trade-off between accuracy and performance
+\end{itemize}
+To determine if the nodes of the tree can be used as 1, reducing the computeitation steps we have to do reducing the time complexity
+to just \[O(n*log(n))\]
+
+\begin{center}
+\begin{tikzpicture}
+\node {Root}
+child {node {Child 1}}
+child {node {Child 2}}
+child {node {Child 3}}
+child {node {Child 4}}
+child {node {Child 5}}
+child {node {Child 6}}
+child {node {Child 7}}
+child {node {Child 8}};
+\end{tikzpicture}
+\end{center}
+
+\subsubsection{Problem with the algorithm on GPU}
+The Barnes-Hut algorithm relies on tree traversal, which is naturally recursive.
+However, recursion is inefficient or unsupported in GPU programming models such as OpenCL.
+Therefore, the algorithm must be reformulated using iterative techniques
+and explicit memory structures.
+
+\section{Solution}
+This section is going to describe the solution and the implementation of the Barnes-Hut alogithm on the GPU
+\subsection{Steps}
+\begin{enumerate}
+    \item Computing the bounding box containing all of the bodies
+    \item Build the octree and instert the bodies into it
+    \item Summerize the information of the bodies (Center Of Mass)
+    \item Sorting the bodies based on spatial distance (not necessay but helps with the performance)
+    \item Calculating the force
+    \item Applying the force to each body, updating position and velocities
+    \item Passing the buffer data to the Renderer 
+\end{enumerate}
+
+\subsection{Data Structure}
+
+Efficient data representation is critical for achieving high performance on the GPU.
+Instead of using a traditional pointer-based tree structure, the simulation uses a
+\textbf{linearized octree} stored in contiguous memory buffers.
+
+\paragraph{Overview}
+
+All simulation data is stored in flat arrays in global memory.
+Each index represents either a body or an internal node of the octree.
+
+\begin{itemize}
+    \item The first $N$ entries correspond to physical bodies (leaf nodes)
+    \item The remaining entries represent internal octree nodes (parents and root)
+\end{itemize}
+The size of the array is chosen to be approximately $2N$, which provides a safe upper bound.
+In an octree, each body corresponds to at most one leaf node, and the number of internal nodes
+is strictly less than the number of bodies. Therefore, the total number of nodes
+(bodies plus internal nodes) never exceeds $2N$.  
+
+\subsection{Buffers}
+
+\paragraph{Position and Mass Storage}
+
+The positions and masses are stored in separate arrays:
+
+\begin{itemize}
+    \item \texttt{pos\_x, pos\_y, pos\_z} — coordinates of bodies and nodes
+    \item \texttt{mass} — mass of each body or aggregated node
+\end{itemize}
+
+For internal nodes, the position represents the \textbf{center of mass (COM)}.
+
+\paragraph{Tree Structure Representation}
+
+The octree structure is encoded using index-based arrays:
+
+\begin{itemize}
+    \item \texttt{child} — stores indices of the 8 children for each node
+    \item \texttt{start} — marks the beginning of a node's body range
+\end{itemize}
+
+Each node has exactly 8 child slots:
+
+\[
+\texttt{child[node * 8 + i]}, \quad i \in [0,7]
+\]
+
+Special values are used to indicate state:
+
+\begin{itemize}
+    \item \texttt{EMPTY (-1)} — no child present
+    \item \texttt{LOCKED (-2)} — node is being modified by another thread
+\end{itemize}
+
+\paragraph{Node Properties}
+
+Additional arrays store per-node metadata:
+
+\begin{itemize}
+    \item \texttt{nodeSize} — spatial size (half-width) of the node
+    \item \texttt{nodeCount} — number of bodies contained in the node
+\end{itemize}
+
+The root node is stored at a fixed index (\texttt{NUMBER\_OF\_NODES}) and represents the bounding volume of the entire system.
+
+\begin{itemize}
+    \item \texttt{NUMBER\_OF\_NODES (numNodes)} — Size of te flat array so $2N$
+\end{itemize}
+
+\paragraph{Auxiliary Buffers}
+
+Several additional buffers are used during computation:
+
+\begin{itemize}
+    \item \texttt{sorted} — stores bodies ordered by spatial locality
+    \item \texttt{accX, accY, accZ} — accumulated forces
+    \item \texttt{vx, vy, vz} — velocities of bodies
+\end{itemize}
+
+\paragraph{Advantages of the Approach}
+
+This data-oriented design has several advantages:
+
+\begin{itemize}
+    \item Avoids dynamic memory allocation and recursion
+    \item Enables parallel processing across thousands of threads
+    \item Improves cache efficiency and memory coalescing
+    \item Allows interoperability with OpenGL buffers for rendering
+\end{itemize}
+
+\paragraph{Summary}
+
+By representing the octree as a set of flat arrays, the simulation achieves a structure
+that is well-suited for GPU execution while still supporting efficient Barnes-Hut traversal.
+
+\subsection{Kernels}
+
+\subsubsection{Bounding Box Kernel}
+
+The purpose of this kernel is to compute the global bounding box that contains all bodies in the simulation.
+This bounding box is later used to initialize the root node of the octree structure required by the Barnes-Hut algorithm.
+
+\paragraph{Overview}
+
+The kernel performs a parallel reduction to determine the minimum and maximum coordinates along each axis ($x$, $y$, $z$).
+Each work-group processes a subset of the bodies and computes a local bounding box, which is then combined into a global result.
+
+\paragraph{Step 1: Local Reduction}
+
+Each work-item iterates over the input data using a strided access pattern:
+
+\[
+i = \text{localId} + \text{groupId} \cdot \text{localSize}
+\]
+
+This ensures that all bodies are covered efficiently across all work-groups.
+
+For each assigned body, the thread updates its local minimum and maximum values:
+\begin{itemize}
+    \item $x_{\min}, x_{\max}$
+    \item $y_{\min}, y_{\max}$
+    \item $z_{\min}, z_{\max}$
+\end{itemize}
+
+These values are stored in shared local memory to allow fast intra-group communication.
+
+\paragraph{Step 2: Parallel Reduction in Local Memory}
+
+A tree-based reduction is performed within each work-group:
+
+\begin{itemize}
+    \item At each step, half of the threads combine their values with a partner thread
+    \item This continues until thread $0$ holds the result for the entire work-group
+\end{itemize}
+
+This reduces the per-group bounding box to a single set of values.
+
+\paragraph{Step 3: Global Reduction}
+
+The first thread of each work-group writes its result into global memory.
+An atomic counter (\texttt{blockCount}) is used to detect when all work-groups have finished.
+The last work-group to finish performs a final reduction over all partial results to compute the global bounding box.
+
+\paragraph{Step 4: Root Node Initialization}
+
+Once the global bounding box is known, the kernel initializes the root node of the octree:
+
+\begin{itemize}
+    \item The center of the root node is computed as:
+    \[
+    \mathbf{c} = \frac{1}{2} (\mathbf{min} + \mathbf{max})
+    \]
+    
+    \item The size (radius) of the node is:
+    \[
+    r = \frac{1}{2} \max \left(
+        x_{\max} - x_{\min},
+        y_{\max} - y_{\min},
+        z_{\max} - z_{\min}
+    \right)
+    \]
+\end{itemize}
+
+The root node is stored at index \texttt{NUMBER\_OF\_NODES} and initialized with:
+\begin{itemize}
+    \item Position = center of the bounding box
+    \item Size = computed radius
+    \item Mass = $-1$ (indicating an internal node)
+    \item Children = \texttt{EMPTY}
+\end{itemize}
+
+\paragraph{Synchronization}
+
+The kernel uses:
+\begin{itemize}
+    \item \texttt{barrier()} for synchronization within a work-group
+    \item \texttt{atomic\_inc()} to coordinate between work-groups
+\end{itemize}
+
+This ensures correct ordering despite the lack of global synchronization in OpenCL.
+
+\paragraph{Result}
+
+At the end of execution:
+\begin{itemize}
+    \item The global bounding box is computed
+    \item The root node of the octree is initialized
+    \item The simulation is ready for tree construction
+\end{itemize}
+
+\end{document}

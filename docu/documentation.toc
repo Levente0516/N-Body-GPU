@@ -1,0 +1,28 @@
+\contentsline {section}{\numberline {1}Introduction}{2}{section.1}%
+\contentsline {subsection}{\numberline {1.1}N-Body simulation}{2}{subsection.1.1}%
+\contentsline {section}{\numberline {2}Problem}{2}{section.2}%
+\contentsline {subsection}{\numberline {2.1}General N-Body problem}{2}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}N-Body computing}{2}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}Barnes-Hut alogithm}{2}{subsection.2.3}%
+\contentsline {subsubsection}{\numberline {2.3.1}Idea}{2}{subsubsection.2.3.1}%
+\contentsline {subsubsection}{\numberline {2.3.2}Problem with the algorithm on GPU}{3}{subsubsection.2.3.2}%
+\contentsline {section}{\numberline {3}Solution}{3}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Steps}{3}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Data Structure}{3}{subsection.3.2}%
+\contentsline {paragraph}{Overview}{3}{section*.2}%
+\contentsline {subsection}{\numberline {3.3}Buffers}{4}{subsection.3.3}%
+\contentsline {paragraph}{Position and Mass Storage}{4}{section*.3}%
+\contentsline {paragraph}{Tree Structure Representation}{4}{section*.4}%
+\contentsline {paragraph}{Node Properties}{4}{section*.5}%
+\contentsline {paragraph}{Auxiliary Buffers}{4}{section*.6}%
+\contentsline {paragraph}{Advantages of the Approach}{5}{section*.7}%
+\contentsline {paragraph}{Summary}{5}{section*.8}%
+\contentsline {subsection}{\numberline {3.4}Kernels}{5}{subsection.3.4}%
+\contentsline {subsubsection}{\numberline {3.4.1}Bounding Box Kernel}{5}{subsubsection.3.4.1}%
+\contentsline {paragraph}{Overview}{5}{section*.9}%
+\contentsline {paragraph}{Step 1: Local Reduction}{5}{section*.10}%
+\contentsline {paragraph}{Step 2: Parallel Reduction in Local Memory}{5}{section*.11}%
+\contentsline {paragraph}{Step 3: Global Reduction}{6}{section*.12}%
+\contentsline {paragraph}{Step 4: Root Node Initialization}{6}{section*.13}%
+\contentsline {paragraph}{Synchronization}{6}{section*.14}%
+\contentsline {paragraph}{Result}{6}{section*.15}%
