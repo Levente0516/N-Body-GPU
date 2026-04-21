@@ -5,7 +5,8 @@ layout(location = 1) in float inMass;
 
 uniform mat4 projection;
 uniform mat4 view;
-uniform int blackHoleIndex;
+uniform int blackHoleIndex1;
+uniform int blackHoleIndex2;
 uniform float uSpawnRange; 
 
 out float vMassNorm;     // 0=low mass star, 1=high mass star
@@ -18,7 +19,7 @@ void main()
     gl_Position  = projection * viewPos;
     float camDist = length(viewPos.xyz);
 
-    vIsBlackHole = (gl_VertexID == blackHoleIndex) ? 1.0 : 0.0;
+    vIsBlackHole = (gl_VertexID == blackHoleIndex1 || gl_VertexID == blackHoleIndex2) ? 1.0 : 0.0;
 
     float logMass = log(inMass + 1.0);
     float logMin  = log(5001.0);
@@ -28,7 +29,7 @@ void main()
     float worldDist = length(inPos);
     vDistNorm = clamp(worldDist / (uSpawnRange * 1.2), 0.0, 1.0);
 
-    if (gl_VertexID == blackHoleIndex)
+    if (gl_VertexID == blackHoleIndex1 || gl_VertexID == blackHoleIndex2)
     {
         // Black hole: large constant size
         gl_PointSize = 120.0;

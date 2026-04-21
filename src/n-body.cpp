@@ -54,6 +54,7 @@ struct SimParams {
     bool  restart = false;
     bool  resetCamera = false;
     bool reParam = false;
+    bool secondBlackHole = false;
 };
 
 static const char* BODY_COUNT_LABELS[] = {
@@ -468,8 +469,17 @@ class SimulationRender
 
             int drawBuf = 1 - *current;
 
-            GLint blackHoleLoc = glGetUniformLocation(program, "blackHoleIndex");
-            glUniform1i(blackHoleLoc, 0);
+            int halfPos = simParams->numBodies / 2;
+
+            glUniform1i(glGetUniformLocation(program, "blackHoleIndex1"), 0);
+            if (simParams->secondBlackHole)
+            {
+                glUniform1i(glGetUniformLocation(program, "blackHoleIndex2"), halfPos);
+            }
+            else
+            {
+                 glUniform1i(glGetUniformLocation(program, "blackHoleIndex2"), -1);
+            }
             glUniform1f(glGetUniformLocation(program, "uSpawnRange"), (float)simParams->spawnRange);
 
             glBindVertexArray(vao);
@@ -611,11 +621,20 @@ class SimulationRender
                     
                 // Distribution
                 const char* distNames[] = {
-                    "Disk","Uniform","Sphere","Ring","Gaussian","Plummer","NFW (dark matter)"
+                    "Disk","Uniform","Sphere","Ring","Gaussian","Plummer","NFW (dark matter)", "Two galaxy"
                 };
-                if (ImGui::Combo("Distribution", &simParams->distType, distNames, 7))
+                if (ImGui::Combo("Distribution", &simParams->distType, distNames, 8))
                 {
                     simParams->restart = true;
+
+                    if (simParams->distType == 7)
+                    {
+                        simParams->secondBlackHole = true;
+                    }
+                    else
+                    {
+                        simParams->secondBlackHole = false;
+                    }
                 }
             }
 
@@ -1072,6 +1091,7 @@ class Simulation
                 case 4: generateGaussian(p); break;
                 case 5: generatePlummer(p);  break;
                 case 6: generateNFW(p);      break;
+                case 7: generateTwoDisk(p); break;
                 default: generateDisk(p);   break;
             }
 
@@ -1113,6 +1133,77 @@ class Simulation
                 h_vx[i] =  std::sin(angle) * v;
                 h_vy[i] = -std::cos(angle) * v;
                 h_vz[i] = 0.0f;
+            }
+        }
+
+        void generateTwoDisk(const SimParams& p)
+        {
+            int   half   = p.numBodies / 2;
+            float offSet = p.spawnRange * 0.5f;
+            float tilt   = glm::radians(30.0f);
+            float c = std::cos(tilt), s = std::sin(tilt);
+
+            float safeT = 50.0f * p.dt;
+            float r_min = std::cbrt((safeT/(2.0f*(float)M_PI)) *
+                                    (safeT/(2.0f*(float)M_PI)) * p.g * p.bhMass);
+            float r_max = offSet * 0.8f;
+            float eps   = p.softening;
+
+            h_x[0] = -offSet; h_y[0] = 0.0f; h_z[0] = 0.0f;
+            h_vx[0] = h_vy[0] = h_vz[0] = 0.0f;
+            h_mass[0] = p.bhMass;
+
+            h_x[half] = +offSet; h_y[half] = 0.0f; h_z[half] = 0.0f;
+            h_vx[half] = h_vy[half] = h_vz[half] = 0.0f;
+            h_mass[half] = p.bhMass;
+
+            for (int i = 1; i < half; i++)
+            {
+                float angle  = ((float)rand()/RAND_MAX) * 2.0f * (float)M_PI;
+                float radius = r_min + (r_max - r_min) * std::sqrt((float)rand()/RAND_MAX);
+
+                float lx = radius * std::cos(angle);
+                float ly = radius * std::sin(angle);
+                float lz = ((float)rand()/RAND_MAX - 0.5f) * 0.05f * r_max;
+                h_x[i] = lx - offSet;
+                h_y[i] = ly;
+                h_z[i] = lz;
+
+                float r2    = lx*lx + ly*ly;
+                float r     = std::max(std::sqrt(r2), r_min);
+                float dist2 = r2 + eps*eps;
+                float dist  = std::sqrt(dist2);
+                float v     = std::sqrt(p.g * p.bhMass * r2 / (dist2 * dist));
+                h_vx[i] =  std::sin(angle) * v;
+                h_vy[i] = -std::cos(angle) * v;
+                h_vz[i] = 0.0f;
+            }
+
+            for (int i = half + 1; i < p.numBodies; i++)
+            {
+                float angle  = ((float)rand()/RAND_MAX) * 2.0f * (float)M_PI;
+                float radius = r_min + (r_max - r_min) * std::sqrt((float)rand()/RAND_MAX);
+
+                float lx = radius * std::cos(angle);
+                float ly = radius * std::sin(angle);
+                float lz = ((float)rand()/RAND_MAX - 0.5f) * 0.05f * r_max;
+
+                float r2    = lx*lx + ly*ly;
+                float r     = std::max(std::sqrt(r2), r_min);
+                float dist2 = r2 + eps*eps;
+                float dist  = std::sqrt(dist2);
+                float v     = std::sqrt(p.g * p.bhMass * r2 / (dist2 * dist));
+                float vx = std::sin(angle) * v;
+                float vy = -std::cos(angle) * v;
+                float vz = 0.0f;
+
+                h_x[i] = lx + offSet;
+                h_y[i] = ly*c - lz*s;
+                h_z[i] = ly*s + lz*c;
+
+                h_vx[i] = vx;
+                h_vy[i] = vy*c - vz*s;
+                h_vz[i] = vy*s + vz*c;
             }
         }
 
