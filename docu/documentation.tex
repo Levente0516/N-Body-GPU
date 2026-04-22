@@ -5,6 +5,7 @@
 \usepackage{geometry}
 \usepackage{bookmark}
 \usepackage{graphicx}
+\usetikzlibrary{decorations.pathreplacing}
 
 \geometry{margin=2.5cm}
 
@@ -19,8 +20,8 @@
 
     \vspace*{2cm}
 
-    {\Huge \textbf{High-Performance N-Body Simulation}}\\[0.4cm]
-    {\Large Using OpenCL on an AMD Integrated GPU}
+    {\Huge \textbf{N-Body Simulation}}\\[0.4cm]
+    {\Large Using OpenCL on an AMD iGPU}
 
     \vspace{2cm}
 
@@ -138,6 +139,57 @@ The size of the array is chosen to be approximately $2N$, which provides a safe 
 In an octree, each body corresponds to at most one leaf node, and the number of internal nodes
 is strictly less than the number of bodies. Therefore, the total number of nodes
 (bodies plus internal nodes) never exceeds $2N$.  
+
+
+\begin{center}
+
+    
+    Array
+    
+    \begin{tikzpicture}[scale=0.9]
+
+    \node at (0.5, 3.5) {0.};
+    \node at (1.5, 3.5) {1.};
+    \node at (2.5, 3.5) {2.};
+    \node at (6.0, 3.5) {...};
+    \node at (9.5, 3.5) {N+1};
+    \node at (10.5, 3.5) {N+2};
+    \node at (13.5, 3.5) {...};
+    \node at (15.5, 3.5) {Max(N$*2$)};
+
+    \foreach \i in {0,...,15} 
+    {
+        \draw (\i,2) rectangle (\i+1,3);
+    }
+
+    \foreach \i/\label in {0/b0,1/b1,2/b2,3/b3,4/b4,5/b5,6/b6,7/b7} 
+    {
+        \node at (\i+0.5,2.5) {\label};
+        \node at (8.5,2.3) {...};
+    }
+
+    \foreach \i/\label in {9/p0,10/p1,11/p2,12/p3,13/p4} 
+    {
+        \node at (\i+0.5,2.5) {\label};
+        \node at (14.5,2.3) {...};
+    }
+
+    \node at (15.5,2.5) {r};
+
+    \draw[decorate,decoration={brace,mirror,amplitude=8pt}]
+    (0.0,1.8) -- (8,1.8)
+    node[midway,yshift=-20pt]{Bodies (leaf nodes)};
+
+    \draw[decorate,decoration={brace,mirror,amplitude=8pt}]
+    (9.0,1.8) -- (14,1.8)
+    node[midway,yshift=-20pt]{Parent nodes};
+
+    \draw[decorate,decoration={brace,mirror,amplitude=8pt}]
+    (15.0,1.8) -- (16,1.8)
+    node[midway,yshift=-20pt]{Root};
+
+    \end{tikzpicture}
+\end{center}
 
 \subsection{Buffers}
 
@@ -308,6 +360,137 @@ At the end of execution:
     \item The global bounding box is computed
     \item The root node of the octree is initialized
     \item The simulation is ready for tree construction
+\end{itemize}
+
+\subsubsection{Build Tree Kernel}
+
+The purpose of this kernel is to construct the octree by inserting each body
+into the hierarchical spatial structure. This step transforms the flat list
+of bodies into a tree representation that enables efficient Barnes-Hut force computation.
+
+\paragraph{Overview}
+
+Each work-item is responsible for inserting one or more bodies into the tree.
+The insertion process starts at the root node and iteratively descends through
+the tree until a suitable location for the body is found.
+
+The kernel avoids recursion by using an iterative traversal approach,
+which is required for efficient execution on the GPU.
+
+\paragraph{Step 1: Initialization}
+
+The root node is retrieved from the precomputed bounding box:
+
+\begin{itemize}
+    \item Position: $(x_{\text{root}}, y_{\text{root}}, z_{\text{root}})$
+    \item Size: \texttt{radius}
+\end{itemize}
+
+Each thread processes bodies in a strided manner:
+
+\[
+\text{bodyIdx} += \text{localSize} \cdot \text{numGroups}
+\]
+
+This ensures all bodies are distributed evenly across threads.
+
+\paragraph{Step 2: Tree Traversal}
+
+For each body, the algorithm determines which of the 8 octants it belongs to.
+This is encoded as a 3-bit index:
+
+\begin{itemize}
+    \item Bit 0: $x$ comparison
+    \item Bit 1: $y$ comparison
+    \item Bit 2: $z$ comparison
+\end{itemize}
+
+This produces a value in the range $[0,7]$, identifying the child node.
+
+The traversal continues as long as the selected child is an internal node:
+\begin{itemize}
+    \item Update the current node
+    \item Reduce the node size (half each level)
+    \item Recompute the child index
+\end{itemize}
+
+\paragraph{Step 3: Concurrent Insertion}
+
+When a leaf position is reached, the kernel attempts to insert the body.
+Since multiple threads may access the same node, atomic operations are required.
+
+\begin{itemize}
+    \item \texttt{atom\_cmpxchg()} is used to lock the target child slot
+    \item \texttt{LOCKED (-2)} indicates that another thread is modifying the node
+\end{itemize}
+
+Three cases are possible:
+
+\begin{enumerate}
+    \item \textbf{Empty slot:}  
+    The body is inserted directly.
+
+    \item \textbf{Occupied by another body:}  
+    A new internal node is created, and both bodies are redistributed
+    into its children.
+
+    \item \textbf{Node already being modified:}  
+    The thread retries until the slot becomes available.
+\end{enumerate}
+
+\paragraph{Step 4: Node Subdivision}
+
+If two bodies fall into the same region, the space is subdivided:
+
+\begin{itemize}
+    \item A new node is allocated using an atomic decrement on \texttt{bottom}
+    \item The node's position and size are computed based on the parent
+    \item The existing body is moved into the correct child of the new node
+\end{itemize}
+
+This process repeats until the bodies are separated or a stopping condition is reached.
+
+\paragraph{Stopping Conditions}
+
+To prevent infinite subdivision, two limits are enforced:
+
+\begin{itemize}
+    \item Minimum cell size: \texttt{currentR < SOFTENING}
+    \item Maximum depth: typically 64 levels
+\end{itemize}
+
+If either condition is met, the body is forcefully inserted without further subdivision.
+
+\paragraph{Step 5: Depth Tracking}
+
+Each thread tracks the maximum depth reached during insertion.
+At the end of execution, a global maximum is computed using:
+
+\begin{itemize}
+    \item \texttt{atom\_max(maxDepth, localMaxD)}
+\end{itemize}
+
+This value is useful for performance analysis and debugging.
+
+\paragraph{Synchronization}
+
+The kernel relies on:
+
+\begin{itemize}
+    \item Atomic operations for safe concurrent updates
+    \item Memory fences (\texttt{mem\_fence}) to ensure visibility of writes
+\end{itemize}
+
+No global synchronization is required, allowing the kernel to scale efficiently.
+
+\paragraph{Result}
+
+After execution:
+
+\begin{itemize}
+    \item All bodies are inserted into the octree
+    \item Internal nodes are created where necessary
+    \item The tree structure is fully constructed and ready for traversal
 \end{itemize}
 
 \end{document}

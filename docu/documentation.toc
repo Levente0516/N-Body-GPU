@@ -14,15 +14,25 @@
 \contentsline {paragraph}{Position and Mass Storage}{4}{section*.3}%
 \contentsline {paragraph}{Tree Structure Representation}{4}{section*.4}%
 \contentsline {paragraph}{Node Properties}{4}{section*.5}%
-\contentsline {paragraph}{Auxiliary Buffers}{4}{section*.6}%
+\contentsline {paragraph}{Auxiliary Buffers}{5}{section*.6}%
 \contentsline {paragraph}{Advantages of the Approach}{5}{section*.7}%
 \contentsline {paragraph}{Summary}{5}{section*.8}%
 \contentsline {subsection}{\numberline {3.4}Kernels}{5}{subsection.3.4}%
 \contentsline {subsubsection}{\numberline {3.4.1}Bounding Box Kernel}{5}{subsubsection.3.4.1}%
 \contentsline {paragraph}{Overview}{5}{section*.9}%
 \contentsline {paragraph}{Step 1: Local Reduction}{5}{section*.10}%
-\contentsline {paragraph}{Step 2: Parallel Reduction in Local Memory}{5}{section*.11}%
+\contentsline {paragraph}{Step 2: Parallel Reduction in Local Memory}{6}{section*.11}%
 \contentsline {paragraph}{Step 3: Global Reduction}{6}{section*.12}%
 \contentsline {paragraph}{Step 4: Root Node Initialization}{6}{section*.13}%
 \contentsline {paragraph}{Synchronization}{6}{section*.14}%
 \contentsline {paragraph}{Result}{6}{section*.15}%
+\contentsline {subsubsection}{\numberline {3.4.2}Build Tree Kernel}{7}{subsubsection.3.4.2}%
+\contentsline {paragraph}{Overview}{7}{section*.16}%
+\contentsline {paragraph}{Step 1: Initialization}{7}{section*.17}%
+\contentsline {paragraph}{Step 2: Tree Traversal}{7}{section*.18}%
+\contentsline {paragraph}{Step 3: Concurrent Insertion}{8}{section*.19}%
+\contentsline {paragraph}{Step 4: Node Subdivision}{8}{section*.20}%
+\contentsline {paragraph}{Stopping Conditions}{8}{section*.21}%
+\contentsline {paragraph}{Step 5: Depth Tracking}{8}{section*.22}%
+\contentsline {paragraph}{Synchronization}{8}{section*.23}%
+\contentsline {paragraph}{Result}{9}{section*.24}%

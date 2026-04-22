@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.28 (MiKTeX 25.12) (preloaded format=pdflatex 2026.1.25)  21 APR 2026 18:38
+This is pdfTeX, Version 3.141592653-2.6-1.40.28 (MiKTeX 25.12) (preloaded format=pdflatex 2026.1.25)  22 APR 2026 14:53
 entering extended mode
  restricted \write18 enabled.
  file:line:error style messages enabled.
@@ -420,42 +420,54 @@ Package uniquecounter Info: New unique counter `rerunfilecheck' on input line 28
 ) (C:\Users\leven\AppData\Local\Programs\MiKTeX\tex/latex/bookmark\bkm-pdftex.def
 File: bkm-pdftex.def 2023-12-10 v1.31 bookmark driver for pdfTeX and luaTeX (HO)
 \BKM@id=\count331
-)) (C:\Users\leven\AppData\Local\Programs\MiKTeX\tex/latex/l3backend\l3backend-pdftex.def
+)) (C:\Users\leven\AppData\Local\Programs\MiKTeX\tex/generic/pgf/frontendlayer/tikz/libraries\tikzlibrarydecorations.pathreplacing.code.tex (C:\Users\leven\AppData\Local\Programs\MiKTeX\tex/generic/pgf/frontendlayer/tikz/libraries\tikzlibrarydecorations.code.tex (C:\Users\leven\AppData\Local\Programs\MiKTeX\tex/generic/pgf/modules\pgfmoduledecorations.code.tex
+\pgfdecoratedcompleteddistance=\dimen278
+\pgfdecoratedremainingdistance=\dimen279
+\pgfdecoratedinputsegmentcompleteddistance=\dimen280
+\pgfdecoratedinputsegmentremainingdistance=\dimen281
+\pgf@decorate@distancetomove=\dimen282
+\pgf@decorate@repeatstate=\count332
+\pgfdecorationsegmentamplitude=\dimen283
+\pgfdecorationsegmentlength=\dimen284
+)
+\tikz@lib@dec@box=\box66
+) (C:\Users\leven\AppData\Local\Programs\MiKTeX\tex/generic/pgf/libraries/decorations\pgflibrarydecorations.pathreplacing.code.tex)) (C:\Users\leven\AppData\Local\Programs\MiKTeX\tex/latex/l3backend\l3backend-pdftex.def
 File: l3backend-pdftex.def 2025-10-09 L3 backend support: PDF output (pdfTeX)
-\l__color_backend_stack_int=\count332
-) (documentation.aux)
+\l__color_backend_stack_int=\count333
+)
+(documentation.aux)
 \openout1 = `documentation.aux'.
 
-LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 15.
-LaTeX Font Info:    ... okay on input line 15.
-LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 15.
-LaTeX Font Info:    ... okay on input line 15.
-LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 15.
-LaTeX Font Info:    ... okay on input line 15.
-LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 15.
-LaTeX Font Info:    ... okay on input line 15.
-LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 15.
-LaTeX Font Info:    ... okay on input line 15.
-LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 15.
-LaTeX Font Info:    ... okay on input line 15.
-LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 15.
-LaTeX Font Info:    ... okay on input line 15.
-LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 15.
-LaTeX Font Info:    ... okay on input line 15.
-LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 15.
-LaTeX Font Info:    ... okay on input line 15.
+LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 16.
+LaTeX Font Info:    ... okay on input line 16.
+LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 16.
+LaTeX Font Info:    ... okay on input line 16.
+LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 16.
+LaTeX Font Info:    ... okay on input line 16.
+LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 16.
+LaTeX Font Info:    ... okay on input line 16.
+LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 16.
+LaTeX Font Info:    ... okay on input line 16.
+LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 16.
+LaTeX Font Info:    ... okay on input line 16.
+LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 16.
+LaTeX Font Info:    ... okay on input line 16.
+LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 16.
+LaTeX Font Info:    ... okay on input line 16.
+LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 16.
+LaTeX Font Info:    ... okay on input line 16.
  (C:\Users\leven\AppData\Local\Programs\MiKTeX\tex/context/base/mkii\supp-pdf.mkii
 [Loading MPS to PDF converter (version 2006.09.02).]
-\scratchcounter=\count333
-\scratchdimen=\dimen278
-\scratchbox=\box66
-\nofMPsegments=\count334
-\nofMParguments=\count335
+\scratchcounter=\count334
+\scratchdimen=\dimen285
+\scratchbox=\box67
+\nofMPsegments=\count335
+\nofMParguments=\count336
 \everyMPshowfont=\toks36
-\MPscratchCnt=\count336
-\MPscratchDim=\dimen279
-\MPnumerator=\count337
-\makeMPintoPDFobject=\count338
+\MPscratchCnt=\count337
+\MPscratchDim=\dimen286
+\MPnumerator=\count338
+\makeMPintoPDFobject=\count339
 \everyMPtoPDFconversion=\toks37
 ) (C:\Users\leven\AppData\Local\Programs\MiKTeX\tex/latex/epstopdf-pkg\epstopdf-base.sty
 Package: epstopdf-base 2020-01-24 v2.11 Base part for package epstopdf
@@ -497,7 +509,7 @@ File: epstopdf-sys.cfg 2021/03/18 v2.0 Configuration of epstopdf for MiKTeX
 * \@reversemarginfalse
 * (1in=72.27pt=25.4mm, 1cm=28.453pt)
 
-Package hyperref Info: Link coloring OFF on input line 15.
+Package hyperref Info: Link coloring OFF on input line 16.
 [1
 
 {C:/Users/leven/AppData/Local/MiKTeX/fonts/map/pdftex/pdftex.map}] (documentation.toc)
@@ -508,25 +520,25 @@ Package hyperref Info: Link coloring OFF on input line 15.
 pdfTeX warning (ext4): destination with the same identifier (name{page.1}) has been already used, duplicate ignored
 <to be read again> 
                    \relax 
-l.51 
-      [1] [2] [3] [4] [5] [6] (documentation.aux)
+l.52 
+      [1] [2] [3] [4] [5] [6] [7] [8] [9] (documentation.aux)
  ***********
 LaTeX2e <2025-11-01>
 L3 programming layer <2025-12-29>
  ***********
  ) 
 Here is how much of TeX's memory you used:
- 20455 strings out of 467871
- 383110 string characters out of 5418376
- 777665 words of memory out of 5000000
- 48981 multiletter control sequences out of 15000+600000
+ 20980 strings out of 467871
+ 400302 string characters out of 5418376
+ 796429 words of memory out of 5000000
+ 49477 multiletter control sequences out of 15000+600000
  634718 words of font info for 65 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 102i,8n,107p,534b,760s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 102i,8n,107p,534b,758s stack positions out of 10000i,1000n,20000p,200000b,200000s
  <C:\Users\leven\AppData\Local\MiKTeX\fonts/pk/ljfour/jknappen/ec/dpi600\tcrm1200.pk><C:/Users/leven/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmbx12.pfb><C:/Users/leven/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmmi12.pfb><C:/Users/leven/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmr12.pfb><C:/Users/leven/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmr17.pfb><C:/Users/leven/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmr8.pfb><C:/Users/leven/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmsy10.pfb><C:/Users/leven/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmtt12.pfb>
-Output written on documentation.pdf (7 pages, 123785 bytes).
+Output written on documentation.pdf (10 pages, 134504 bytes).
 PDF statistics:
- 182 PDF objects out of 1000 (max. 8388607)
- 43 named destinations out of 1000 (max. 500000)
- 125 words of extra memory for PDF output out of 10000 (max. 10000000)
+ 213 PDF objects out of 1000 (max. 8388607)
+ 59 named destinations out of 1000 (max. 500000)
+ 133 words of extra memory for PDF output out of 10000 (max. 10000000)
 
