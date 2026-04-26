@@ -1,0 +1,11 @@
+AVG fps for 64 bodies: 373.861
+AVG fps for 128 bodies: 313.253
+AVG fps for 256 bodies: 297.976
+AVG fps for 512 bodies: 256.808
+AVG fps for 1024 bodies: 173.746
+AVG fps for 2048 bodies: 113.049
+AVG fps for 4096 bodies: 72.0579
+AVG fps for 8192 bodies: 42.844
+AVG fps for 16384 bodies: 25.179
+AVG fps for 32768 bodies: 13.3746
+AVG fps for 65536 bodies: 6.58725

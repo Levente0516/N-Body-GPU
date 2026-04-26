@@ -40,6 +40,8 @@ const int WARPSIZE = 64;
 const int CAMERAZOOM = 1;
 const int MAXDEPTH = 64;
 
+//std::ofstream g("preformance-analisys/65536.txt");
+
 struct SimParams {
     float g = 4.0f;
     float dt = 0.5f;
@@ -654,6 +656,9 @@ class SimulationRender
                 simParams->restart = true;
 
             ImGui::Text("%.1f FPS", ImGui::GetIO().Framerate);
+
+            //g << (float)ImGui::GetIO().Framerate << std::endl;
+
             ImGui::End();
 
             ImGui::Render();
@@ -1356,7 +1361,7 @@ class Simulation
             std::vector<int> sorted(numNodes+1, 0);
             for (int i = 0; i < p.numBodies; i++)
             {
-                sorted[i] = 0;
+                sorted[i] = i;
             }
 
             queue.enqueueWriteBuffer(buf_sorted, CL_TRUE, 0, (numNodes+1)*sizeof(int), sorted.data());
@@ -1389,6 +1394,8 @@ int main()
     { 
         sim.step(render, params); 
     });
+    
+    //g.close();
     
     return 0;
 }

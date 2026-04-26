@@ -117,7 +117,7 @@ __kernel void buildTreeKernel(
                             child[NUMBER_OF_CELLS * node + childPath] = bodyIdx;
                             mem_fence(CLK_GLOBAL_MEM_FENCE);
                             child[locked] = (patch >= 0) ? patch : c;
-                            bool forceInserted = true;
+                            forceInserted = true;
                             goto next_body;
                         }
                         
@@ -127,7 +127,7 @@ __kernel void buildTreeKernel(
                         {   
                             *bottom = NUMBER_OF_NODES;
                             child[locked] = c;
-                            bool forceInserted = true;  
+                            forceInserted = true;  
                             return;
                         }
 
